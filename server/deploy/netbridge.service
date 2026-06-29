@@ -1,0 +1,27 @@
+[Unit]
+Description=NetBridge Server (Signaling + Relay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/netbridge
+ExecStart=/opt/netbridge/netbridge-server
+Restart=always
+RestartSec=3
+
+# 安全加固（可选）
+User=nobody
+Group=nogroup
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+# 日志交给 journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=netbridge-server
+
+[Install]
+WantedBy=multi-user.target

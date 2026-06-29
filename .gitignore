@@ -1,0 +1,34 @@
+# Go 编译产物
+# 忽略所有编译出的二进制可执行文件 (如果项目包含多个平台，可具体指定如 myapp.exe)
+/myapp
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go 工作区与 vendor 依赖
+# 若不使用 vendor 可忽略此项
+/vendor/
+go.work
+go.work.sum
+
+# 测试与覆盖率文件
+*.out
+*.test
+*.prof
+cover.out
+
+# IDE 与编辑器配置文件
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS 系统文件
+.DS_Store
+
+# 日志与配置文件
+*.log
+config.yaml
+.claude

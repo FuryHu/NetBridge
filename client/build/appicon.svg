@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  NetBridge 应用图标。
+  概念：两个节点（远端 / 本地）之间用一座弧形桥连接，象征跨网段把局域网"桥"起来。
+  - 主色取自 UI 的青绿色 #4cf2a0（顶栏 VIP 徽标 / 主按钮系列）。
+  - 背景用深蓝 #162030（顶栏底色），保持品牌一致。
+  - 1024×1024 给 Windows ICO 转换器留足分辨率。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- 圆角方背景（Windows 10 / 11 现代风格图标的主流轮廓）-->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1b2a3d"/>
+      <stop offset="100%" stop-color="#0e1722"/>
+    </linearGradient>
+    <linearGradient id="bridge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#4cf2a0"/>
+      <stop offset="50%" stop-color="#7df5b8"/>
+      <stop offset="100%" stop-color="#4cf2a0"/>
+    </linearGradient>
+    <radialGradient id="node" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#e8fff3"/>
+      <stop offset="60%" stop-color="#4cf2a0"/>
+      <stop offset="100%" stop-color="#2d8a5e"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 圆角方底 -->
+  <rect x="64" y="64" width="896" height="896" rx="180" ry="180" fill="url(#bg)"/>
+
+  <!-- 隐隐的网格暗示"网络"，透明度很低不抢主体 -->
+  <g stroke="#4cf2a0" stroke-width="2" opacity="0.06">
+    <line x1="64" y1="320" x2="960" y2="320"/>
+    <line x1="64" y1="512" x2="960" y2="512"/>
+    <line x1="64" y1="704" x2="960" y2="704"/>
+    <line x1="320" y1="64" x2="320" y2="960"/>
+    <line x1="512" y1="64" x2="512" y2="960"/>
+    <line x1="704" y1="64" x2="704" y2="960"/>
+  </g>
+
+  <!-- 桥（弧形）：从左节点弧到右节点，象征"跨过中间隔阂" -->
+  <!-- 主弧 -->
+  <path d="M 240 600 Q 512 280 784 600"
+        fill="none"
+        stroke="url(#bridge)"
+        stroke-width="56"
+        stroke-linecap="round"/>
+  <!-- 桥下方的"包"流动指示：三个小圆点，代表数据封包正在桥上传 -->
+  <circle cx="380" cy="468" r="14" fill="#e8fff3" opacity="0.85"/>
+  <circle cx="512" cy="408" r="14" fill="#e8fff3" opacity="0.95"/>
+  <circle cx="644" cy="468" r="14" fill="#e8fff3" opacity="0.85"/>
+
+  <!-- 两个节点 -->
+  <circle cx="240" cy="600" r="92" fill="url(#node)"/>
+  <circle cx="784" cy="600" r="92" fill="url(#node)"/>
+
+  <!-- 节点中心高光 -->
+  <circle cx="240" cy="600" r="32" fill="#ffffff" opacity="0.75"/>
+  <circle cx="784" cy="600" r="32" fill="#ffffff" opacity="0.75"/>
+
+  <!-- 底部副标识：一条横线 + 端点小方块，暗示"网线"，强化"网络桥接"语义 -->
+  <g transform="translate(0,140)">
+    <rect x="200" y="660" width="80" height="20" rx="4" fill="#4cf2a0" opacity="0.55"/>
+    <rect x="744" y="660" width="80" height="20" rx="4" fill="#4cf2a0" opacity="0.55"/>
+    <line x1="280" y1="670" x2="744" y2="670"
+          stroke="#4cf2a0" stroke-width="6" stroke-dasharray="14 10" opacity="0.5"/>
+  </g>
+</svg>
