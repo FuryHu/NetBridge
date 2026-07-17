@@ -193,15 +193,38 @@ func (c *Client) Connect(serverAddr string) error {
 	}
 	c.conn = conn
 
-	// 启动持续读循环（使用 client 的 context）。
+	c.setState(StateConnecting)
+
+	// 启动持续读循环（使用 client 的 context）——握手 Pong 要靠它 dispatch 进 pongCh。
 	c.conn.Start(c.ctx, c.dispatch)
 
-	// 启动心跳。
+	// 握手：发 Ping 等 Pong，确认服务器真实可达。
+	// 只建本地 socket 不算"已连接"——服务器没开时 socket 照样建成功，
+	// 会导致前端误判已连接、进入房间页却永远收不到 RoomStatus（VIP 不分配、网卡不创建）。
+	if _, err := c.PingServer(); err != nil {
+		c.failConnect()
+		return fmt.Errorf("无法连接到服务器: %w", err)
+	}
+
+	// 握手成功后才启动心跳——失败路径不启动，避免 failConnect 后残留双心跳。
 	go c.heartbeatLoop()
 
-	c.setState(StateConnecting)
 	c.log.Info("已连接服务器", "server", serverAddr, "local", conn.LocalAddr())
 	return nil
+}
+
+// failConnect 清理一次失败的连接尝试，恢复到可重连的初始状态。
+// 仅在 Connect 握手失败时调用：此时未进房间、未启心跳，只需停读循环、关 socket。
+func (c *Client) failConnect() {
+	c.cancel()
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
+	c.serverAddr = nil
+	c.setState(StateDisconnected)
+	// 重建 context，供下次 Connect 使用。
+	c.ctx, c.cancel = context.WithCancel(context.Background())
 }
 
 // JoinRoom 加入房间并等待 RoomStatus 响应。

@@ -20,6 +20,8 @@ const data = reactive({
   self: {id: '', nickName: '', vip: '', publicAddr: '', v4: '', v6: '', isIPv6: false},
   allPeers: [],
   connected: false,
+  connecting: false,
+  connectError: '',
   joined: false,
   tunActive: false,
   chat: [],
@@ -85,7 +87,9 @@ function isMine(nick) { return nick === data.self.nickName || nick === data.nick
 
 async function doConnect() {
   const addr = data.serverAddr.trim()
-  if (!addr) return
+  if (!addr || data.connecting) return
+  data.connecting = true
+  data.connectError = ''
   addLog(`连接 ${addr} ...`)
   try {
     await Connect(addr)
@@ -94,7 +98,10 @@ async function doConnect() {
     addLog('✓ 已连接')
     refreshStatus()
   } catch (e) {
+    data.connectError = '连接失败：' + e
     addLog('✗ 连接失败: ' + e)
+  } finally {
+    data.connecting = false
   }
 }
 
@@ -167,6 +174,7 @@ async function refreshStatus() {
 async function autoConnect() {
   if (autoTried || !hist.serverAddr) return
   autoTried = true
+  data.connecting = true
   addLog('自动连接 ' + hist.serverAddr)
   try {
     await Connect(hist.serverAddr)
@@ -185,7 +193,13 @@ async function autoConnect() {
         await refreshStatus()
       } catch (e) { addLog('自动加入失败: ' + e) }
     }
-  } catch (e) { data.connected = false }
+  } catch (e) {
+    data.connected = false
+    data.connectError = '自动连接失败：' + e
+    addLog('✗ 自动连接失败: ' + e)
+  } finally {
+    data.connecting = false
+  }
 }
 
 // ---- 事件 ----
@@ -197,7 +211,8 @@ onMounted(() => {
       data.joined = true; refreshStatus()
       if (!refreshTimer) refreshTimer = setInterval(refreshStatus, 2000)
     }
-    if (s === '连接中') data.connected = true
+    // 注意：不在「连接中」时置 connected=true——握手期间后端状态先到「连接中」，
+    // 若此时翻页会过早进入房间页。connected 由 doConnect/autoConnect 握手成功后显式置位。
     if (s === '未连接') {
       data.connected = false; data.joined = false
       if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
@@ -275,9 +290,15 @@ onUnmounted(() => {
         <h2 class="card-title">连接服务器</h2>
         <input v-model="data.serverAddr"
                @keyup.enter="doConnect"
+               :disabled="data.connecting"
                placeholder="服务器地址，例如 1.2.3.4:10555"
                class="input"/>
-        <button @click="doConnect" class="btn btn-primary btn-block">连接</button>
+        <button @click="doConnect"
+                :disabled="data.connecting"
+                class="btn btn-primary btn-block">
+          {{ data.connecting ? '连接中…' : '连接' }}
+        </button>
+        <p v-if="data.connectError" class="auth-error">{{ data.connectError }}</p>
       </section>
     </div>
 
@@ -570,6 +591,13 @@ onUnmounted(() => {
 .auth-card .input + .btn,
 .auth-card .btn + .input {
   margin-top: 10px;
+}
+.auth-error {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-danger);
+  word-break: break-word;
 }
 
 /* ===== 房间布局 ===== */
