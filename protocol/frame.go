@@ -30,6 +30,12 @@ const (
 	FrameP2P   byte = 1
 	FrameRelay byte = 2
 
+	// FrameVoice 语音帧：payload 为 voice 子格式（codec/seq/timestamp/audio，见 voice.go）。
+	// 走 P2P 直连时直接发对端，走 Relay 时由服务端按 dstVIP 透传（与 FrameRelay 同路径）。
+	// 发言人标识复用帧头 srcVIP，不在 payload 重复——这也是为未来 SFU 留的口子：
+	// 服务端可按 srcVIP 识别并扇出某人的语音流，无需改协议。
+	FrameVoice byte = 3
+
 	FrameHeaderSize = 12
 )
 

@@ -19,8 +19,10 @@ const (
 
 // Channel 抽象网络通道，客户端通过它发送数据给对端。
 type Channel interface {
-	// Send 发送原始字节到对端。
+	// Send 发送原始字节到对端（默认帧类型：P2P 直连用 FrameP2P，Relay 用 FrameRelay）。
 	Send(data []byte) error
+	// SendTyped 用指定帧类型发送。语音走 FrameVoice 时用，避免与游戏数据混入同一帧类型。
+	SendTyped(frameType byte, data []byte) error
 	// Type 返回通道类型。
 	Type() ChannelType
 	// Close 释放底层资源（心跳 goroutine 等）。可多次调用。
@@ -64,9 +66,14 @@ func NewP2PChannel(conn *UDPConn, peerAddr *net.UDPAddr, srcVIP, dstVIP uint32) 
 	return c
 }
 
-func (c *P2PChannel) Send(data []byte) error {
-	frame := protocol.EncodeFrame(protocol.FrameP2P, c.srcVIP, c.dstVIP, data)
+// SendTyped 用指定帧类型发送（语音用 FrameVoice，游戏数据用 FrameP2P）。
+func (c *P2PChannel) SendTyped(frameType byte, data []byte) error {
+	frame := protocol.EncodeFrame(frameType, c.srcVIP, c.dstVIP, data)
 	return c.conn.SendRaw(c.peerAddr, frame)
+}
+
+func (c *P2PChannel) Send(data []byte) error {
+	return c.SendTyped(protocol.FrameP2P, data)
 }
 
 func (c *P2PChannel) Type() ChannelType { return ChannelP2P }
@@ -121,9 +128,13 @@ func NewRelayChannel(conn *UDPConn, serverAddr *net.UDPAddr, srcVIP, dstVIP uint
 	}
 }
 
-func (c *RelayChannel) Send(data []byte) error {
-	frame := protocol.EncodeFrame(protocol.FrameRelay, c.srcVIP, c.dstVIP, data)
+func (c *RelayChannel) SendTyped(frameType byte, data []byte) error {
+	frame := protocol.EncodeFrame(frameType, c.srcVIP, c.dstVIP, data)
 	return c.conn.SendRaw(c.serverAddr, frame)
+}
+
+func (c *RelayChannel) Send(data []byte) error {
+	return c.SendTyped(protocol.FrameRelay, data)
 }
 
 func (c *RelayChannel) Type() ChannelType { return ChannelRelay }

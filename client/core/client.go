@@ -74,6 +74,10 @@ type Client struct {
 	// dataHandler 收到对端数据时的回调（供 tun bridge 注入）。
 	dataHandler func(srcVIP uint32, data []byte)
 
+	// voiceHandler 收到对端语音帧时的回调（供前端播放模块注入）。
+	// 与 dataHandler 独立：语音不进虚拟网卡，走单独的播放通路。
+	voiceHandler func(srcVIP uint32, payload []byte)
+
 	// chatHandler 收到聊天消息时的回调（供前端展示）。
 	chatHandler func(nickName, msg string, ts int64)
 
@@ -123,6 +127,9 @@ func (c *Client) SetOnSelfUpdate(fn func(protocol.PeerInfo)) { c.onSelfUpdate = 
 
 // SetDataHandler 注册对端数据回调（用于 tun bridge 写入网卡）。
 func (c *Client) SetDataHandler(fn func(srcVIP uint32, data []byte)) { c.dataHandler = fn }
+
+// SetVoiceHandler 注册对端语音帧回调（供前端播放模块注入）。
+func (c *Client) SetVoiceHandler(fn func(srcVIP uint32, payload []byte)) { c.voiceHandler = fn }
 
 // SetChatHandler 注册聊天消息回调。
 func (c *Client) SetChatHandler(fn func(nickName, msg string, ts int64)) { c.chatHandler = fn }
@@ -373,23 +380,25 @@ func (c *Client) GetPeerChannelInfo(peerID string) (kind string, addr string, is
 	}
 }
 
-// SendToPeer 向指定 peer 发送数据（自动选择通道：P2P > Relay）。
+// channelForVIP 返回（或创建 Relay 兜底的）到指定 VIP 的通道。
 //
 // 早期出包（打洞还没完成）会落到 Relay 兜底；一旦 punchPeer 拿到 punch_reply，
-// 该函数下次调用会自动用到新建的 P2P 通道——map 替换是原子的，
+// 下次调用会自动用到新建的 P2P 通道--map 替换是原子的，
 // 旧 Relay 通道仅持有 conn 引用、无 goroutine，被替换后由 GC 回收，无泄漏。
-func (c *Client) SendToPeer(dstVIP uint32, data []byte) error {
+//
+// SendToPeer（游戏数据）与 SendVoice（语音）共用此选路逻辑：
+// 语音与游戏数据享受同样的 P2P 优先 / Relay 回落，无需为语音单独建路。
+func (c *Client) channelForVIP(dstVIP uint32) (netconn.Channel, error) {
 	p := c.peerMgr.GetByVIP(dstVIP)
 	if p == nil {
-		return fmt.Errorf("未知的目标 VIP: %d", dstVIP)
+		return nil, fmt.Errorf("未知的目标 VIP: %d", dstVIP)
 	}
 
 	c.channelsMu.RLock()
 	ch, ok := c.channels[p.ID]
 	c.channelsMu.RUnlock()
-
 	if ok {
-		return ch.Send(data)
+		return ch, nil
 	}
 
 	// 无通道则创建 Relay 兜底。
@@ -399,14 +408,50 @@ func (c *Client) SendToPeer(dstVIP uint32, data []byte) error {
 	// double-check：可能在加锁前别的 goroutine 已经建好通道（打洞 / 被动建立）。
 	if existing, ok2 := c.channels[p.ID]; ok2 {
 		c.channelsMu.Unlock()
-		return existing.Send(data)
+		return existing, nil
 	}
 	c.channels[p.ID] = relay
 	c.channelsMu.Unlock()
 	c.notifyPeers()
 
 	c.log.Debug("创建 Relay 通道", "peer", p.ID, "dstVIP", dstVIP)
-	return relay.Send(data)
+	return relay, nil
+}
+
+// SendToPeer 向指定 peer 发送数据（自动选择通道：P2P > Relay）。
+func (c *Client) SendToPeer(dstVIP uint32, data []byte) error {
+	ch, err := c.channelForVIP(dstVIP)
+	if err != nil {
+		return err
+	}
+	return ch.Send(data)
+}
+
+// SendVoice 向指定 peer 发送一帧语音（payload 为 voice 子格式，见 protocol/voice.go）。
+// 复用同样的选路，因此语音与游戏数据走同一条通道。
+func (c *Client) SendVoice(dstVIP uint32, payload []byte) error {
+	ch, err := c.channelForVIP(dstVIP)
+	if err != nil {
+		return err
+	}
+	return ch.SendTyped(protocol.FrameVoice, payload)
+}
+
+// SendVoiceToAll 向房间内所有其他 peer 广播一帧语音。
+// 前端每帧只调一次本方法，由后端遍历 peer 列表分发，
+// 避免 50pps × N 次跨 Wails IPC 调用。
+func (c *Client) SendVoiceToAll(payload []byte) error {
+	selfVIP := c.peerMgr.Self().VirtualIP
+	var lastErr error
+	for _, p := range c.peerMgr.List() {
+		if p.VirtualIP == selfVIP {
+			continue
+		}
+		if err := c.SendVoice(p.VirtualIP, payload); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
 }
 
 // PingServer 向服务器发送 Ping 并等待 Pong，返回 RTT（毫秒）。
@@ -518,17 +563,31 @@ func (c *Client) dispatch(remote *net.UDPAddr, data []byte) {
 	}
 }
 
-// handleCompactFrame 处理 P2P / Relay 紧凑帧：抽出 payload 直接交给 dataHandler。
+// handleCompactFrame 处理 P2P / Relay / Voice 紧凑帧，按帧类型分流：
+//   - FrameVoice -> voiceHandler（前端播放），不进虚拟网卡
+//   - FrameP2P / FrameRelay -> dataHandler（写虚拟网卡，裸 IP 包）
+//
+// 空载 payload（keepalive）直接丢弃，对上层透明。
 func (c *Client) handleCompactFrame(data []byte) {
-	_, srcVIP, _, payload, err := protocol.DecodeFrame(data)
+	frameType, srcVIP, _, payload, err := protocol.DecodeFrame(data)
 	if err != nil {
 		return
 	}
-	if c.dataHandler != nil && len(payload) > 0 {
-		// payload 是 data 的尾段视图，dataHandler 可能异步使用 → 拷贝一份。
-		buf := make([]byte, len(payload))
-		copy(buf, payload)
-		c.dataHandler(srcVIP, buf)
+	if len(payload) == 0 {
+		return // keepalive 空载帧
+	}
+	// payload 是 data 的尾段视图，handler 可能异步使用 -> 拷贝一份。
+	buf := make([]byte, len(payload))
+	copy(buf, payload)
+	switch frameType {
+	case protocol.FrameVoice:
+		if c.voiceHandler != nil {
+			c.voiceHandler(srcVIP, buf)
+		}
+	default: // FrameP2P / FrameRelay -> 网卡
+		if c.dataHandler != nil {
+			c.dataHandler(srcVIP, buf)
+		}
 	}
 }
 

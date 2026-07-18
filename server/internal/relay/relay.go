@@ -37,9 +37,11 @@ func (r *Relay) HandleCompactFrame(remote *net.UDPAddr, raw []byte) error {
 	if err != nil {
 		return err
 	}
-	if frameType != protocol.FrameRelay {
-		// 紧凑 P2P 帧不该到达服务端，丢弃即可。
-		r.log.Debug("收到非 Relay 类型的紧凑帧", "type", frameType, "remote", remote)
+	if frameType != protocol.FrameRelay && frameType != protocol.FrameVoice {
+		// 紧凑 P2P 帧不该到达服务端，丢弃即可。Relay 与 Voice 都按 DstVIP 透传，
+		// 服务端不解析 payload（仅原样转发字节）。注意这并不等于机密性：relay 运营方
+		// 或链路抓包者仍能拿到原始 Opus 字节自行解码，当前路径无端到端加密。
+		r.log.Debug("收到非 Relay/Voice 类型的紧凑帧", "type", frameType, "remote", remote)
 		return nil
 	}
 

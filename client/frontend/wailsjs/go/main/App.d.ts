@@ -23,3 +23,5 @@ export function PingServer(arg1:string):Promise<number>;
 export function RestartAsAdmin():Promise<void>;
 
 export function SendChat(arg1:string):Promise<void>;
+
+export function SendVoiceToAll(arg1:Array<number>):Promise<void>;

@@ -74,6 +74,17 @@ func (a *App) startup(ctx context.Context) {
 	a.client.SetLogHandler(func(msg string) {
 		wailsRuntime.EventsEmit(a.ctx, "log:message", msg)
 	})
+	a.client.SetVoiceHandler(func(srcVIP uint32, payload []byte) {
+		if a.ctx == nil {
+			return
+		}
+		// srcVIP 是虚拟 IP 主机号（uint32），前端按它分发给对应 peer 的播放队列。
+		// payload 为 voice 子格式字节，[]byte 经 Wails 序列化为 base64，前端自行解码。
+		wailsRuntime.EventsEmit(a.ctx, "voice:data", map[string]interface{}{
+			"srcVIP": srcVIP,
+			"data":   payload,
+		})
+	})
 
 	a.log.Info("NetBridge 客户端已启动")
 }
@@ -164,6 +175,16 @@ func (a *App) SendChat(msg string) error {
 		return fmt.Errorf("客户端未初始化")
 	}
 	return a.client.SendChat(msg)
+}
+
+// SendVoiceToAll 向房间内所有其他 peer 广播一帧语音。
+// payload 为 voice 子格式字节（codec/seq/ts/audio，见 protocol/voice.go）。
+// 前端每帧调用一次，由后端遍历 peer 分发，避免高频 IPC。
+func (a *App) SendVoiceToAll(payload []byte) error {
+	if a.client == nil {
+		return fmt.Errorf("客户端未初始化")
+	}
+	return a.client.SendVoiceToAll(payload)
 }
 
 // autoEnsureTun 是 onSelfUpdate 回调里的网卡自动开启逻辑。
