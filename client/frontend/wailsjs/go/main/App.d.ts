@@ -18,6 +18,8 @@ export function JoinRoom(arg1:string,arg2:string):Promise<void>;
 
 export function LeaveRoom():Promise<void>;
 
+export function OpenURL(arg1:string):Promise<void>;
+
 export function PingServer(arg1:string):Promise<number>;
 
 export function RestartAsAdmin():Promise<void>;

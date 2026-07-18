@@ -1,9 +1,13 @@
 <script setup>
-import {reactive, onMounted, onUnmounted, nextTick, ref, computed} from 'vue'
-import {Connect, Disconnect, JoinRoom, LeaveRoom, GetPeers, GetSelf, GetStatus, SendChat} from '../../wailsjs/go/main/App'
+import {reactive, onMounted, onUnmounted, nextTick, ref, computed, watch} from 'vue'
+import {Connect, Disconnect, JoinRoom, LeaveRoom, GetPeers, GetSelf, GetStatus, SendChat, OpenURL} from '../../wailsjs/go/main/App'
 import {EventsOn, EventsOff} from '../../wailsjs/runtime/runtime'
 import {startVoice} from '../voice'
+import {locale, t, setLocale, LANGS} from '../i18n'
 import MicIcon from './MicIcon.vue'
+
+// GitHub 仓库链接（顶栏图标按钮打开）。换成自己的仓库地址即可。
+const GITHUB_URL = 'https://github.com/FuryHu/netbridge'
 
 const STORAGE_KEY = 'netbridge_history'
 function loadHistory() {
@@ -48,40 +52,66 @@ let autoTried = false
 let refreshTimer = null
 let peerLevelTimers = {}
 
-// 自定义确认弹窗
-const confirmMsg = ref('')
+// 自定义确认弹窗（传 i18n key，模板里再 t() 取文案，随语言切换实时更新）
+const confirmKey = ref('')
 const confirmAction = ref(null)
-function showConfirm(msg, action) {
-  confirmMsg.value = msg
+function showConfirm(key, action) {
+  confirmKey.value = key
   confirmAction.value = action
 }
 function doConfirm() {
   if (confirmAction.value) confirmAction.value()
-  confirmMsg.value = ''
+  confirmKey.value = ''
   confirmAction.value = null
 }
 function cancelConfirm() {
-  confirmMsg.value = ''
+  confirmKey.value = ''
   confirmAction.value = null
 }
+
+// 语言切换浮窗
+const showLang = ref(false)
+function pickLocale(code) {
+  setLocale(code)
+  showLang.value = false
+}
+// GitHub 图标：走后端 BrowserOpenURL 在系统浏览器打开（webview 内 <a href> 不可靠）
+function openGitHub() {
+  OpenURL(GITHUB_URL)
+}
+// 进/出房间时收起语言浮窗，避免离开房间后凭残留 showLang 重新弹出
+watch(() => data.joined, () => { showLang.value = false })
 
 const others = computed(() => data.allPeers)
 
 // 兼容服务端返回的两种 IPv6 标识：通道是否走 v6 / peer 是否暴露 v6 端点。
 const isPeerV6 = (p) => !!(p.isIPv6 || p.IsIPv6)
 const peerHasV6 = (p) => !!(p.v6 || p.V6)
+
+// 后端 State.String() 返回中文状态串；前端先映射成稳定 key，再做 i18n 与配色。
+const STATUS_KEY = {
+  '未连接': 'disconnected',
+  '连接中': 'connecting',
+  '已连接': 'connected',
+  '打洞中': 'punching',
+  'P2P直连': 'p2p',
+  '服务器中转': 'relay',
+}
+function statusKey(s) { return STATUS_KEY[s] || 'disconnected' }
+
 // channel 文案（hover title 用）；不再依赖 emoji 在主视图里表达。
 function peerTitle(p) {
-  const ch = p.channel === 'p2p' ? 'P2P 直连' : p.channel === 'relay' ? '服务器中转' : '连接中'
+  const ch = p.channel === 'p2p' ? t('peer.channelP2P') : p.channel === 'relay' ? t('peer.channelRelay') : t('peer.channelPending')
   const proto = isPeerV6(p) ? ' · IPv6' : (p.channel === 'p2p' ? ' · IPv4' : '')
-  const v6 = peerHasV6(p) && !isPeerV6(p) ? '\n候选 IPv6: ' + (p.v6 || p.V6) : ''
+  const v6 = peerHasV6(p) && !isPeerV6(p) ? '\n' + t('peer.candidateV6') + (p.v6 || p.V6) : ''
   return `${p.nickName} · VIP: ${p.vip} · ${ch}${proto}${v6}`
 }
 // 把后端的 status 字符串映射成视觉颜色 token——使用规范里的 4 个状态色之一。
 function statusColor(s) {
-  if (s === '已连接' || s === 'P2P直连') return 'success'
-  if (s === '连接中') return 'info'
-  if (s === '打洞中' || s === '服务器中转') return 'warning'
+  const k = statusKey(s)
+  if (k === 'connected' || k === 'p2p') return 'success'
+  if (k === 'connecting') return 'info'
+  if (k === 'punching' || k === 'relay') return 'warning'
   return 'muted'
 }
 
@@ -112,7 +142,7 @@ async function doConnect() {
     addLog('✓ 已连接')
     refreshStatus()
   } catch (e) {
-    data.connectError = '连接失败：' + e
+    data.connectError = String(e)
     addLog('✗ 连接失败: ' + e)
   } finally {
     data.connecting = false
@@ -120,7 +150,7 @@ async function doConnect() {
 }
 
 async function doDisconnect() {
-  showConfirm('确定要断开连接吗？', async () => {
+  showConfirm('modal.confirmDisconnect', async () => {
     await Disconnect()
     if (data.voice) { data.voice.stop(); data.voice = null }
     data.micOn = false
@@ -160,7 +190,7 @@ async function doJoinRoom() {
 }
 
 function doLeaveRoom() {
-  showConfirm('确定要退出房间吗？', () => {
+  showConfirm('modal.confirmLeaveRoom', () => {
     LeaveRoom()
     if (data.voice) { data.voice.stop(); data.voice = null }
     data.micOn = false
@@ -332,6 +362,11 @@ function onKeydown(e) {
     e.preventDefault()
     toggleMic()
   }
+  // Ctrl+Shift+L：切换日志面板（顶栏日志按钮已隐藏，改用快捷键触发）
+  if (e.ctrlKey && e.shiftKey && (e.key === 'l' || e.key === 'L')) {
+    e.preventDefault()
+    showLog.value = !showLog.value
+  }
 }
 
 async function refreshStatus() {
@@ -372,7 +407,7 @@ async function autoConnect() {
     }
   } catch (e) {
     data.connected = false
-    data.connectError = '自动连接失败：' + e
+    data.connectError = String(e)
     addLog('✗ 自动连接失败: ' + e)
   } finally {
     data.connecting = false
@@ -384,13 +419,13 @@ async function autoConnect() {
 onMounted(() => {
   EventsOn('status:change', (s) => {
     data.status = s
-    if (s === '已连接') {
+    if (statusKey(s) === 'connected') {
       data.joined = true; refreshStatus()
       if (!refreshTimer) refreshTimer = setInterval(refreshStatus, 2000)
     }
     // 注意：不在「连接中」时置 connected=true——握手期间后端状态先到「连接中」，
     // 若此时翻页会过早进入房间页。connected 由 doConnect/autoConnect 握手成功后显式置位。
-    if (s === '未连接') {
+    if (statusKey(s) === 'disconnected') {
       data.connected = false; data.joined = false
       if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
     }
@@ -455,62 +490,86 @@ onUnmounted(() => {
         <span class="brand">{{ data.joined ? data.room : 'NetBridge' }}</span>
         <span class="status" :class="'status-' + statusColor(data.status)">
           <span class="status-dot"></span>
-          <span class="status-text">{{ data.status }}</span>
+          <span class="status-text">{{ t('status.' + statusKey(data.status)) }}</span>
         </span>
-        <span v-if="data.self.vip" class="badge badge-mono" title="虚拟 IP">{{ data.self.vip }}</span>
-        <span v-if="data.tunActive" class="badge badge-info" title="虚拟网卡已激活">TUN</span>
-        <span v-if="data.self.isIPv6" class="badge badge-primary" title="服务端可经 IPv6 联系到本机">IPv6</span>
-        <span v-else-if="data.self.v4" class="badge badge-ghost" title="仅 IPv4 公网端点">IPv4</span>
+        <span v-if="data.self.vip" class="badge badge-mono" :title="t('topbar.vipTip')">{{ data.self.vip }}</span>
+        <span v-if="data.tunActive" class="badge badge-info" :title="t('topbar.tunTip')">TUN</span>
+        <span v-if="data.self.isIPv6" class="badge badge-primary" :title="t('topbar.ipv6Tip')">IPv6</span>
+        <span v-else-if="data.self.v4" class="badge badge-ghost" :title="t('topbar.ipv4Tip')">IPv4</span>
       </div>
       <div class="topbar-right">
-        <button @click="showLog = !showLog" class="btn btn-ghost btn-sm" :class="{ 'is-active': showLog }">日志</button>
-        <button v-if="data.joined" @click="doLeaveRoom" class="btn btn-ghost btn-sm">退出房间</button>
-        <button v-if="data.connected" @click="doDisconnect" class="btn btn-ghost btn-sm btn-danger-ghost">断开</button>
+        <!-- 语言切换：文/A 翻译图标 + 下拉（仅连接前 / 进房前显示；语言已缓存，进房后无需再切） -->
+        <div v-if="!data.joined" class="lang-switch">
+          <button @click="showLang = !showLang" class="btn btn-ghost btn-sm icon-btn"
+                  :class="{ 'is-active': showLang }"
+                  :title="t('lang.label')" :aria-label="t('lang.label')">
+            <svg class="ico" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/>
+            </svg>
+          </button>
+          <div v-if="showLang" class="lang-backdrop" @click="showLang = false"></div>
+          <div class="lang-popover" v-show="showLang" @click.stop>
+            <button v-for="l in LANGS" :key="l.code" @click="pickLocale(l.code)"
+                    class="lang-option" :class="{ 'is-active': locale === l.code }">
+              <span class="lang-check">{{ locale === l.code ? '✓' : '' }}</span>
+              <span class="lang-name">{{ l.label }}</span>
+            </button>
+          </div>
+        </div>
+        <!-- GitHub 仓库链接（仅连接前 / 进房前显示；房间内隐藏，保持工作区清爽） -->
+        <button v-if="!data.joined" @click="openGitHub" class="btn btn-ghost btn-sm icon-btn github-btn" title="GitHub" aria-label="GitHub">
+          <svg class="ico" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 .5C5.37.5 0 5.78 0 12.29c0 5.2 3.44 9.61 8.21 11.16.6.11.82-.25.82-.56 0-.28-.01-1.02-.02-2-3.34.71-4.04-1.58-4.04-1.58-.55-1.36-1.34-1.72-1.34-1.72-1.09-.73.08-.72.08-.72 1.21.08 1.84 1.22 1.84 1.22 1.07 1.8 2.81 1.28 3.5.98.11-.76.42-1.28.76-1.57-2.67-.3-5.47-1.3-5.47-5.78 0-1.28.47-2.32 1.23-3.14-.12-.3-.53-1.5.12-3.13 0 0 1-.32 3.3 1.2a11.6 11.6 0 0 1 6 0c2.3-1.52 3.3-1.2 3.3-1.2.65 1.63.24 2.83.12 3.13.77.82 1.23 1.86 1.23 3.14 0 4.49-2.81 5.48-5.49 5.77.43.36.81 1.08.81 2.18 0 1.57-.01 2.84-.01 3.23 0 .31.21.68.83.56A12.04 12.04 0 0 0 24 12.29C24 5.78 18.63.5 12 .5z"/>
+          </svg>
+        </button>
+        <button v-if="data.joined" @click="doLeaveRoom" class="btn btn-ghost btn-sm">{{ t('topbar.leaveRoom') }}</button>
+        <button v-if="data.connected" @click="doDisconnect" class="btn btn-ghost btn-sm btn-danger-ghost">{{ t('topbar.disconnect') }}</button>
       </div>
     </header>
 
-    <!-- 日志面板：可折叠的辅助信息区 -->
+    <!-- 日志面板：可折叠的辅助信息区（顶栏日志按钮已隐藏，Ctrl+Shift+L 切换） -->
     <div v-if="showLog" class="log-panel">
+      <button class="log-close" @click="showLog = false" :title="t('log.close')" aria-label="×">×</button>
       <div class="log-panel-body" ref="logEl">
         <div v-for="(m, i) in data.log" :key="i" class="log-line">{{ m }}</div>
-        <div v-if="data.log.length === 0" class="log-empty">暂无日志</div>
+        <div v-if="data.log.length === 0" class="log-empty">{{ t('log.empty') }}</div>
       </div>
     </div>
 
     <!-- 连接服务器页 -->
     <div v-if="!data.connected" class="centered">
       <section class="card auth-card">
-        <h2 class="card-title">连接服务器</h2>
+        <h2 class="card-title">{{ t('connect.title') }}</h2>
         <input v-model="data.serverAddr"
                @keyup.enter="doConnect"
                :disabled="data.connecting"
-               placeholder="服务器地址，例如 1.2.3.4:10555"
+               :placeholder="t('connect.placeholder')"
                class="input"/>
         <button @click="doConnect"
                 :disabled="data.connecting"
                 class="btn btn-primary btn-block">
-          {{ data.connecting ? '连接中…' : '连接' }}
+          {{ data.connecting ? t('connect.connecting') : t('connect.button') }}
         </button>
-        <p v-if="data.connectError" class="auth-error">{{ data.connectError }}</p>
+        <p v-if="data.connectError" class="auth-error">{{ t('connect.failed') }}{{ data.connectError }}</p>
       </section>
     </div>
 
     <!-- 加入房间页 -->
     <div v-else-if="!data.joined" class="centered">
       <section class="card auth-card">
-        <h2 class="card-title">加入房间</h2>
-        <input v-model="data.room" @keyup.enter="doJoinRoom" placeholder="房间号" class="input"/>
-        <input v-model="data.nickName" @keyup.enter="doJoinRoom" placeholder="昵称" class="input"/>
-        <button @click="toggleVoiceEnabled" class="voice-toggle" :class="{ 'is-off': !data.voiceEnabled }" :title="data.voiceEnabled ? '语音已启用（点击关闭）' : '语音已关闭（点击开启）'">
+        <h2 class="card-title">{{ t('join.title') }}</h2>
+        <input v-model="data.room" @keyup.enter="doJoinRoom" :placeholder="t('join.roomPlaceholder')" class="input"/>
+        <input v-model="data.nickName" @keyup.enter="doJoinRoom" :placeholder="t('join.namePlaceholder')" class="input"/>
+        <button @click="toggleVoiceEnabled" class="voice-toggle" :class="{ 'is-off': !data.voiceEnabled }" :title="data.voiceEnabled ? t('voice.enabledTip') : t('voice.disabledTip')">
           <svg class="vt-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M11 5 L6 9 H3 V15 H6 L11 19 Z"/>
             <path d="M15.5 8.5 a5 5 0 0 1 0 7"/>
             <path d="M18 6 a9 9 0 0 1 0 12"/>
             <line v-if="!data.voiceEnabled" x1="4" y1="4" x2="20" y2="20"/>
           </svg>
-          <span class="vt-txt">{{ data.voiceEnabled ? '语音开' : '语音关' }}</span>
+          <span class="vt-txt">{{ data.voiceEnabled ? t('voice.on') : t('voice.off') }}</span>
         </button>
-        <button @click="doJoinRoom" class="btn btn-primary btn-block">加入</button>
+        <button @click="doJoinRoom" class="btn btn-primary btn-block">{{ t('join.button') }}</button>
       </section>
     </div>
 
@@ -519,7 +578,7 @@ onUnmounted(() => {
       <!-- 左侧成员列表 -->
       <aside class="members">
         <div class="members-head">
-          <span class="members-title">成员</span>
+          <span class="members-title">{{ t('members.title') }}</span>
           <span class="members-count">{{ others.length + 1 }}</span>
         </div>
         <ul class="member-list">
@@ -527,7 +586,7 @@ onUnmounted(() => {
           <li class="member member-self">
             <span class="member-dot dot-self"></span>
             <span class="member-name">{{ data.self.nickName || '...' }}</span>
-            <span class="member-tag">我</span>
+            <span class="member-tag">{{ t('members.self') }}</span>
           </li>
           <!-- 其他人 -->
           <li v-for="p in others"
@@ -539,14 +598,14 @@ onUnmounted(() => {
             <span class="member-dot"
                   :class="p.channel === 'p2p' ? 'dot-p2p' : p.channel === 'relay' ? 'dot-relay' : 'dot-pending'"></span>
             <span class="member-name">{{ p.nickName }}</span>
-            <span v-if="isSpeaking(p)" class="member-speaking-dot" title="正在说话"></span>
-            <MicIcon v-if="isPeerMuted(p)" muted class="member-mute-ico" title="已为你静音"/>
+            <span v-if="isSpeaking(p)" class="member-speaking-dot" :title="t('voice.speaking')"></span>
+            <MicIcon v-if="isPeerMuted(p)" muted class="member-mute-ico" :title="t('voice.mutedForYou')"/>
             <span v-if="p.channel === 'p2p'" class="member-channel ch-p2p">P2P</span>
-            <span v-else-if="p.channel === 'relay'" class="member-channel ch-relay">中转</span>
+            <span v-else-if="p.channel === 'relay'" class="member-channel ch-relay">{{ t('peer.badgeRelay') }}</span>
             <span v-else class="member-channel ch-pending">…</span>
             <div class="peer-popover" v-show="isPeerPopover(p)" :style="peerPopoverStyle(p)" @click.stop>
               <input type="range" min="0" max="100" :value="peerVolPct(p)" @input="onPeerVolInput(p, $event)" class="peer-slider"/>
-              <button @click="togglePeerMute(p)" class="peer-mute-btn" :class="{ 'is-on': isPeerMuted(p) }" title="静音/取消">
+              <button @click="togglePeerMute(p)" class="peer-mute-btn" :class="{ 'is-on': isPeerMuted(p) }" :title="t('voice.muteToggleTip')">
                 <MicIcon :muted="isPeerMuted(p)" class="peer-mute-ico"/>
               </button>
             </div>
@@ -556,7 +615,7 @@ onUnmounted(() => {
              @mouseenter="data.showMicPopover = data.voiceEnabled"
              @mouseleave="data.showMicPopover = false"
              @wheel="onMicWheel">
-          <button @click="toggleVoiceEnabled" class="voice-global" :class="{ 'is-off': !data.voiceEnabled }" :title="data.voiceEnabled ? '语音已启用（点击关闭）' : '语音已关闭（点击开启）'">
+          <button @click="toggleVoiceEnabled" class="voice-global" :class="{ 'is-off': !data.voiceEnabled }" :title="data.voiceEnabled ? t('voice.enabledTip') : t('voice.disabledTip')">
             <svg class="vg-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M11 5 L6 9 H3 V15 H6 L11 19 Z"/>
               <path d="M15.5 8.5 a5 5 0 0 1 0 7"/>
@@ -568,10 +627,10 @@ onUnmounted(() => {
             <input type="range" min="0" max="100" v-model.number="data.micGainPct"
                    @input="onMicGainInput" @wheel.stop="onMicWheel" class="mic-slider"/>
           </div>
-          <button @click="toggleMic" class="voice-btn" :class="{ 'is-on': data.micOn, 'is-disabled': !data.voiceEnabled }" :disabled="!data.voiceEnabled" :title="data.micOn ? '关闭麦克风 (F2)' : '开启麦克风 (F2)'">
+          <button @click="toggleMic" class="voice-btn" :class="{ 'is-on': data.micOn, 'is-disabled': !data.voiceEnabled }" :disabled="!data.voiceEnabled" :title="data.micOn ? t('voice.micOnTip') : t('voice.micOffTip')">
             <span class="voice-fill" :style="{ transform: 'scaleX(' + data.micLevel + ')' }"></span>
             <MicIcon :muted="!data.micOn" class="voice-ico"/>
-            <span class="voice-txt">{{ data.micOn ? '开麦' : '静音' }}</span>
+            <span class="voice-txt">{{ data.micOn ? t('voice.micOn') : t('voice.micOff') }}</span>
             <span class="voice-f2">F2</span>
           </button>
         </div>
@@ -590,22 +649,22 @@ onUnmounted(() => {
             </div>
             <div class="chat-bubble">{{ c.msg }}</div>
           </div>
-          <div v-if="data.chat.length === 0" class="chat-empty">暂无消息</div>
+          <div v-if="data.chat.length === 0" class="chat-empty">{{ t('chat.empty') }}</div>
         </div>
         <div class="chat-input-row">
-          <input v-model="chatMsg" @keyup.enter="doSendChat" placeholder="输入消息..." class="input"/>
-          <button @click="doSendChat" class="btn btn-primary">发送</button>
+          <input v-model="chatMsg" @keyup.enter="doSendChat" :placeholder="t('chat.placeholder')" class="input"/>
+          <button @click="doSendChat" class="btn btn-primary">{{ t('chat.send') }}</button>
         </div>
       </section>
     </section>
 
     <!-- 确认弹窗 -->
-    <div v-if="confirmMsg" class="modal-overlay" @click.self="cancelConfirm">
+    <div v-if="confirmKey" class="modal-overlay" @click.self="cancelConfirm">
       <div class="modal">
-        <p class="modal-text">{{ confirmMsg }}</p>
+        <p class="modal-text">{{ t(confirmKey) }}</p>
         <div class="modal-actions">
-          <button @click="cancelConfirm" class="btn btn-ghost">取消</button>
-          <button @click="doConfirm" class="btn btn-primary">确定</button>
+          <button @click="cancelConfirm" class="btn btn-ghost">{{ t('modal.cancel') }}</button>
+          <button @click="doConfirm" class="btn btn-primary">{{ t('modal.confirm') }}</button>
         </div>
       </div>
     </div>
@@ -1243,9 +1302,29 @@ onUnmounted(() => {
 
 /* ===== 日志面板 ===== */
 .log-panel {
+  position: relative;
   background: var(--color-bg-secondary);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
+}
+/* 日志面板关闭按钮（顶栏日志按钮已隐藏，面板内提供关闭入口） */
+.log-close {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-disabled);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 1;
+}
+.log-close:hover {
+  color: var(--color-text);
 }
 .log-panel-body {
   max-height: 140px;
@@ -1311,5 +1390,78 @@ onUnmounted(() => {
 }
 :deep(::-webkit-scrollbar-thumb:hover) {
   background: var(--color-text-disabled);
+}
+
+/* ===== 顶栏：图标按钮 / 语言切换 / GitHub ===== */
+.icon-btn {
+  width: 26px;
+  padding: 0;
+  flex-shrink: 0;
+}
+.ico {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+/* 语言切换浮窗：文/A 翻译按钮 + 下拉 + 透明 backdrop 捕获外部点击关闭 */
+.lang-switch {
+  position: relative;
+  display: inline-flex;
+}
+.lang-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+.lang-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  min-width: 132px;
+  padding: 4px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lang-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 13px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 120ms, color 120ms;
+}
+.lang-option:hover {
+  background: var(--color-hover-overlay);
+  color: var(--color-text);
+}
+.lang-option.is-active {
+  color: var(--color-accent);
+}
+.lang-check {
+  width: 14px;
+  font-size: 12px;
+  color: var(--color-accent);
+  flex-shrink: 0;
+}
+.lang-name {
+  flex: 1;
+}
+/* GitHub 标记是实心 path，略缩一点更协调 */
+.github-btn .ico {
+  width: 15px;
+  height: 15px;
 }
 </style>

@@ -150,6 +150,14 @@ func (a *App) RestartAsAdmin() {
 	RestartAsAdmin()
 }
 
+// OpenURL 用系统默认浏览器打开外部链接（如 GitHub 仓库）。
+// 前端图标按钮调用；webview 内 <a href> 打开外部站点行为不可靠，统一走这里。
+func (a *App) OpenURL(url string) {
+	if a.ctx != nil {
+		wailsRuntime.BrowserOpenURL(a.ctx, url)
+	}
+}
+
 // Disconnect 断开服务器连接。
 // adapter 不在这里关——保留到 shutdown，避免下次 Connect+JoinRoom 又要 2s 重建。
 func (a *App) Disconnect() {

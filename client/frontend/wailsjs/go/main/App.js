@@ -34,6 +34,10 @@ export function LeaveRoom() {
   return window['go']['main']['App']['LeaveRoom']();
 }
 
+export function OpenURL(arg1) {
+  return window['go']['main']['App']['OpenURL'](arg1);
+}
+
 export function PingServer(arg1) {
   return window['go']['main']['App']['PingServer'](arg1);
 }
