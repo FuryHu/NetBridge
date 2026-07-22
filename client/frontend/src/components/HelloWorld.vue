@@ -37,6 +37,7 @@ const data = reactive({
   activePeerRect: null,
   voiceEnabled: (typeof localStorage !== 'undefined' && localStorage.getItem('netbridge_voice') === 'on'),
   speaking: {},
+  selfSpeaking: false,
   micLevel: 0,
   micGainPct: 100,
   showMicPopover: false,
@@ -51,6 +52,7 @@ const logEl = ref(null)
 let autoTried = false
 let refreshTimer = null
 let peerLevelTimers = {}
+let selfSpeakTimer = null
 
 // 自定义确认弹窗（传 i18n key，模板里再 t() 取文案，随语言切换实时更新）
 const confirmKey = ref('')
@@ -155,12 +157,14 @@ async function doDisconnect() {
     if (data.voice) { data.voice.stop(); data.voice = null }
     data.micOn = false
     data.micLevel = 0
+    data.selfSpeaking = false
     data.speaking = {}
     data.peerVols = {}
     data.peerMutes = {}
     data.activePeerVIP = null
     for (const k in peerLevelTimers) clearTimeout(peerLevelTimers[k])
     peerLevelTimers = {}
+    if (selfSpeakTimer) { clearTimeout(selfSpeakTimer); selfSpeakTimer = null }
     data.connected = false
     data.joined = false
     data.allPeers = []
@@ -195,12 +199,14 @@ function doLeaveRoom() {
     if (data.voice) { data.voice.stop(); data.voice = null }
     data.micOn = false
     data.micLevel = 0
+    data.selfSpeaking = false
     data.speaking = {}
     data.peerVols = {}
     data.peerMutes = {}
     data.activePeerVIP = null
     for (const k in peerLevelTimers) clearTimeout(peerLevelTimers[k])
     peerLevelTimers = {}
+    if (selfSpeakTimer) { clearTimeout(selfSpeakTimer); selfSpeakTimer = null }
     data.joined = false
     data.allPeers = []
     data.chat = []
@@ -230,6 +236,10 @@ function peerVIPNum(p) {
 function isSpeaking(p) {
   return !!data.speaking[String(peerVIPNum(p))]
 }
+// 自己正在说话：micLevel 触发（底噪已滤除），与成员同款 600ms 保持，不闪烁
+function isSelfSpeaking() {
+  return data.micOn && data.selfSpeaking
+}
 // 本地麦克风发送增益：滑块 / 滚轮调节，0~100% -> setMicGain(0~1)
 function onMicGainInput() {
   if (data.voice) data.voice.setMicGain(data.micGainPct / 100)
@@ -244,7 +254,17 @@ function onMicWheel(e) {
 // 语音回调：对方音量用 peak hold + 1.5s 归零，避免随底噪闪烁、停说话后平滑消失
 function voiceCallbacks() {
   return {
-    onMicLevel: (level) => { data.micLevel = Math.max(level, data.micLevel * 0.97) }, // peak hold + 慢衰减，避免抖动
+    // 本地音量条与"自己正在说话"分两路：音量条要跟手（快衰减），说话点亮要稳（600ms 保持，不闪烁）。
+    onMicLevel: (level) => {
+      // 音量条：快衰减（0.8，约 200ms 释放）紧跟实时电平；原 0.97 约 1.5s 尾巴，滞后明显。
+      data.micLevel = Math.max(level, data.micLevel * 0.8)
+      // 自己正在说话：level>0（底噪已被噪声门滤除）即点亮，600ms 保持后熄灭，与成员一致。
+      if (level > 0) {
+        data.selfSpeaking = true
+        if (selfSpeakTimer) clearTimeout(selfSpeakTimer)
+        selfSpeakTimer = setTimeout(() => { data.selfSpeaking = false }, 600)
+      }
+    },
     onPeerLevel: (srcVIP, level) => {
       // 只在实质声音触发"正在说话"（level>0，底噪已被噪声门滤除），避免闪烁
       if (level > 0) {
@@ -277,7 +297,8 @@ function toggleVoiceEnabled() {
   try { localStorage.setItem('netbridge_voice', data.voiceEnabled ? 'on' : 'off') } catch (e) {}
   if (!data.voiceEnabled && data.voice) {
     data.voice.stop(); data.voice = null
-    data.micOn = false; data.micLevel = 0
+    data.micOn = false; data.micLevel = 0; data.selfSpeaking = false
+    if (selfSpeakTimer) { clearTimeout(selfSpeakTimer); selfSpeakTimer = null }
     data.speaking = {}; data.peerVols = {}; data.peerMutes = {}; data.activePeerVIP = null
   } else if (data.voiceEnabled && data.joined && !data.voice) {
     autoStartVoice()
@@ -349,6 +370,8 @@ async function toggleMic() {
   data.micOn = !data.micOn
   try {
     await data.voice.setMicOn(data.micOn)
+    // 闭麦立即清空本地音量条与说话指示，避免残留电平/亮灯悬在半空
+    if (!data.micOn) { data.micLevel = 0; data.selfSpeaking = false }
     addLog(data.micOn ? '麦克风已开' : '麦克风已静音')
   } catch (e) {
     data.micOn = !data.micOn
@@ -583,9 +606,10 @@ onUnmounted(() => {
         </div>
         <ul class="member-list">
           <!-- 自己 -->
-          <li class="member member-self">
+          <li class="member member-self" :class="{ 'member-speaking': isSelfSpeaking() }">
             <span class="member-dot dot-self"></span>
             <span class="member-name">{{ data.self.nickName || '...' }}</span>
+            <span v-if="isSelfSpeaking()" class="member-speaking-dot" :title="t('voice.speaking')"></span>
             <span class="member-tag">{{ t('members.self') }}</span>
           </li>
           <!-- 其他人 -->
@@ -1054,7 +1078,7 @@ onUnmounted(() => {
   background: var(--color-success-soft);
   transform-origin: left center;
   transform: scaleX(0);
-  transition: transform 300ms ease-out;
+  transition: transform 80ms ease-out;
   z-index: 0;
   pointer-events: none;
 }
