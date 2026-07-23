@@ -73,4 +73,9 @@ export default {
 
   // Language switch
   'lang.label': 'Language',
+
+  // System tray context menu (translated by frontend, pushed to backend)
+  'tray.show': 'Show Window',
+  'tray.voice': 'Voice',
+  'tray.quit': 'Quit NetBridge',
 }

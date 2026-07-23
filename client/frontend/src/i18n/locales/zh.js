@@ -73,4 +73,9 @@ export default {
 
   // 语言切换
   'lang.label': '语言',
+
+  // 托盘右键菜单（文案由前端翻译后推送给后端）
+  'tray.show': '显示主窗口',
+  'tray.voice': '语音',
+  'tray.quit': '退出 NetBridge',
 }

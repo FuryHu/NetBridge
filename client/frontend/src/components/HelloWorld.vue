@@ -1,7 +1,7 @@
 <script setup>
 import {reactive, onMounted, onUnmounted, nextTick, ref, computed, watch} from 'vue'
-import {Connect, Disconnect, JoinRoom, LeaveRoom, GetPeers, GetSelf, GetStatus, SendChat, OpenURL} from '../../wailsjs/go/main/App'
-import {EventsOn, EventsOff} from '../../wailsjs/runtime/runtime'
+import {Connect, Disconnect, JoinRoom, LeaveRoom, GetPeers, GetSelf, GetStatus, SendChat, OpenURL, SetTrayMenuState} from '../../wailsjs/go/main/App'
+import {EventsOn, EventsOff, WindowHide} from '../../wailsjs/runtime/runtime'
 import {startVoice} from '../voice'
 import {locale, t, setLocale, LANGS} from '../i18n'
 import MicIcon from './MicIcon.vue'
@@ -390,6 +390,14 @@ function onKeydown(e) {
     e.preventDefault()
     showLog.value = !showLog.value
   }
+  // ESC：最小化到托盘。聚焦在输入框/文本域时不触发，避免误关正在输入的内容。
+  if (e.key === 'Escape') {
+    const tag = (e.target && e.target.tagName) || ''
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+      e.preventDefault()
+      WindowHide()
+    }
+  }
 }
 
 async function refreshStatus() {
@@ -439,6 +447,15 @@ async function autoConnect() {
 
 // ---- 事件 ----
 
+// syncTray 把当前语言下的菜单文案 + 语音开关状态推给后端托盘。
+// 后端只做展示（"语音"项据此打勾），不持有语音业务状态。
+// 切换语言 / 切换语音时由下面的 watch 自动同步。
+function syncTray() {
+  SetTrayMenuState(t('tray.show'), t('tray.voice'), t('tray.quit'), data.voiceEnabled).catch(() => {})
+}
+// 语言或语音开关变化 -> 重推托盘菜单状态（含打勾与翻译文案）。
+watch([locale, () => data.voiceEnabled], () => syncTray())
+
 onMounted(() => {
   EventsOn('status:change', (s) => {
     data.status = s
@@ -486,6 +503,10 @@ onMounted(() => {
   EventsOn('chat:message', (c) => { addChat(c.nickName, c.message, c.timestamp) })
   EventsOn('log:message', (msg) => { addLog(msg) })
   EventsOn('tun:active', (active) => { data.tunActive = !!active })
+  // 托盘右键"切换语音" -> 复用全局语音开关（状态权威仍在前端，后端只转发事件）
+  EventsOn('tray:toggle-voice', () => toggleVoiceEnabled())
+  // 初次推送托盘菜单状态（watch 只在变化时触发，挂载时需手动推一次）
+  syncTray()
   // F2 快捷开关麦克风
   window.addEventListener('keydown', onKeydown)
   // 尝试自动连接
@@ -500,6 +521,7 @@ onUnmounted(() => {
   EventsOff('chat:message')
   EventsOff('log:message')
   EventsOff('tun:active')
+  EventsOff('tray:toggle-voice')
   if (refreshTimer) clearInterval(refreshTimer)
 })
 </script>

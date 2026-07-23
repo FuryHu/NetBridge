@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/FuryHu/netbridge/client/core"
 	"github.com/FuryHu/netbridge/client/tun"
@@ -32,6 +33,11 @@ type App struct {
 	tunMu sync.Mutex
 	// lastVIP 记录上次配置到 adapter 的 VIP，避免每次 self:update 都重设。
 	lastVIP string
+
+	// quitting 区分"真正退出"与"关闭即最小化到托盘"。
+	// OnBeforeClose 非退出时阻止关闭并隐藏窗口；tray 的"退出"菜单置 true 后才放行。
+	quitting atomic.Bool
+	tray     *tray
 }
 
 // NewApp 创建 App 实例。
@@ -86,11 +92,20 @@ func (a *App) startup(ctx context.Context) {
 		})
 	})
 
+	// 系统托盘：关闭/ESC 最小化到这里，右键菜单提供显示窗口 / 切换语音 / 退出。
+	// 菜单项回调在托盘线程触发，转调下面的方法（都用 wailsRuntime，跨线程安全）。
+	a.tray = newTray(a.log, a.showFromTray, a.toggleVoiceFromTray, a.quitFromTray)
+	a.tray.start()
+
 	a.log.Info("NetBridge 客户端已启动")
 }
 
 // shutdown 在 Wails 应用退出时调用，清理资源。
 func (a *App) shutdown(ctx context.Context) {
+	if a.tray != nil {
+		// 先摘掉托盘图标，避免退出后任务栏残留空壳图标。
+		a.tray.stop()
+	}
 	if a.bridge != nil {
 		a.bridge.Stop()
 	}
@@ -102,6 +117,51 @@ func (a *App) shutdown(ctx context.Context) {
 		a.client.Close()
 	}
 	a.log.Info("NetBridge 客户端已停止")
+}
+
+// ---- 托盘相关 ----
+
+// onBeforeClose 拦截窗口关闭：非真正退出时改为隐藏到托盘，退出时放行。
+// 注意：wailsRuntime.Quit 内部也会回调 OnBeforeClose，靠 quitting 标志放行。
+func (a *App) onBeforeClose(ctx context.Context) (prevent bool) {
+	if a.quitting.Load() {
+		return false
+	}
+	// 异步隐藏，避免在 WM_CLOSE 同步处理链里直接操作窗口的重入风险。
+	go wailsRuntime.WindowHide(ctx)
+	return true
+}
+
+// showFromTray 托盘"显示主窗口" / 双击图标：从托盘恢复窗口。
+func (a *App) showFromTray() {
+	if a.ctx != nil {
+		wailsRuntime.WindowShow(a.ctx)
+	}
+}
+
+// toggleVoiceFromTray 托盘"切换语音"：发事件给前端，由前端调 toggleVoiceEnabled()。
+// 语音状态权威仍在前端，后端不持有--与"暂不需后端管理语音状态"的要求一致。
+func (a *App) toggleVoiceFromTray() {
+	if a.ctx != nil {
+		wailsRuntime.EventsEmit(a.ctx, "tray:toggle-voice")
+	}
+}
+
+// quitFromTray 托盘"退出"：置退出标志后真正退出应用。
+func (a *App) quitFromTray() {
+	a.quitting.Store(true)
+	if a.ctx != nil {
+		wailsRuntime.Quit(a.ctx)
+	}
+}
+
+// SetTrayMenuState 由前端推送托盘右键菜单的显示状态。
+// 文案由前端按当前语言翻译后传入（i18n 单一来源，后端不做翻译）；
+// voiceOn 仅用于"语音"项是否打勾，是展示态，语音业务权威仍在前端。
+func (a *App) SetTrayMenuState(showLabel, voiceLabel, quitLabel string, voiceOn bool) {
+	if a.tray != nil {
+		a.tray.setMenuState(showLabel, voiceLabel, quitLabel, voiceOn)
+	}
 }
 
 // ---- 前端可调用的方法 ----

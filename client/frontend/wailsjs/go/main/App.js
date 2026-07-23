@@ -53,3 +53,7 @@ export function SendChat(arg1) {
 export function SendVoiceToAll(arg1) {
   return window['go']['main']['App']['SendVoiceToAll'](arg1);
 }
+
+export function SetTrayMenuState(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SetTrayMenuState'](arg1, arg2, arg3, arg4);
+}
