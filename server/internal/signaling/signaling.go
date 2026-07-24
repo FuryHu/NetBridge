@@ -60,6 +60,8 @@ func (h *RoomHandler) Handle(ctx context.Context, remote *net.UDPAddr, raw []byt
 		return h.handleChat(raw)
 	case protocol.TypePeerStatus:
 		return h.handlePeerStatus(raw)
+	case protocol.TypePeerMetrics:
+		return h.handlePeerMetrics(raw)
 	case protocol.TypePeerLeave:
 		return h.handlePeerLeave(raw)
 	default:
@@ -253,6 +255,42 @@ func (h *RoomHandler) handlePeerStatus(raw []byte) error {
 		}
 		if err := h.srv.Send(rp.Addr, data); err != nil {
 			h.log.Warn("广播 PeerStatus 失败", "target", rp.ID, "err", err)
+		}
+	}
+	return nil
+}
+
+// handlePeerMetrics 处理 peer 自测服务器 RTT 上报：原样广播给房间其他成员，
+// 供其按"我方 SRTT + 对方 SRTT"估算中转延迟。服务端不保存该值。
+func (h *RoomHandler) handlePeerMetrics(raw []byte) error {
+	var pkt protocol.PeerMetricsPacket
+	if err := protocol.Decode(raw, &pkt); err != nil {
+		return err
+	}
+	if pkt.Room == "" || pkt.PeerID == "" {
+		return nil
+	}
+
+	rm := h.mgr.Get(pkt.Room)
+	if rm == nil {
+		return nil
+	}
+	if rm.GetPeer(pkt.PeerID) == nil {
+		h.log.Debug("PeerMetrics 来源 peer 不存在", "room", pkt.Room, "peer", pkt.PeerID)
+		return nil
+	}
+
+	// 原样广播给房间其他成员（不含发送者自己，其本地 SRTT 已是权威）。
+	data, err := protocol.Encode(pkt)
+	if err != nil {
+		return err
+	}
+	for _, rp := range rm.PeerList() {
+		if rp.ID == pkt.PeerID {
+			continue
+		}
+		if err := h.srv.Send(rp.Addr, data); err != nil {
+			h.log.Warn("广播 PeerMetrics 失败", "target", rp.ID, "err", err)
 		}
 	}
 	return nil

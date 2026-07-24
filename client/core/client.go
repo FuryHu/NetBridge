@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/FuryHu/netbridge/client/netconn"
@@ -71,6 +72,20 @@ type Client struct {
 	// 同一个 UDP socket 同时供 dispatch 和 PingServer 用，必须由 dispatch 单读。
 	pongCh chan protocol.PongPacket
 
+	// serverRTT 本端到服务器的最近一次 RTT（ms），由 pongLoop 从心跳 Pong 计算。
+	// 中转 peer 的延迟估算为我方 serverRTT 加对方 serverRTT，见 PeerMetricsPacket。
+	serverRTT atomic.Int64
+	// pongSeq 每次 pongLoop 收到 Pong 自增；PingServer 据其推进判断"新 Pong 到达"，
+	// 不再直接读 pongCh，避免与心跳 pong 抢通道。
+	pongSeq atomic.Uint64
+
+	// lastEmittedLatency 上次推给前端的各 peer 延迟，用于增量去重（latencyEmitLoop）。
+	lastEmittedLatency map[string]int64
+	latencyMu         sync.Mutex
+
+	// onLatencyUpdate 单个 peer 延迟变化回调（peerID, ms；ms=-1 表示未知或已离线）。
+	onLatencyUpdate func(peerID string, ms int64)
+
 	// dataHandler 收到对端数据时的回调（供 tun bridge 注入）。
 	dataHandler func(srcVIP uint32, data []byte)
 
@@ -107,7 +122,8 @@ func New(log *slog.Logger) *Client {
 		peerMgr:        peer.NewManager(),
 		channels:       make(map[string]netconn.Channel),
 		pendingPunches: make(map[string]chan struct{}),
-		pongCh:         make(chan protocol.PongPacket, 4),
+		pongCh:             make(chan protocol.PongPacket, 4),
+		lastEmittedLatency: make(map[string]int64),
 		state:          StateDisconnected,
 		log:            log,
 		ctx:            ctx,
@@ -136,6 +152,9 @@ func (c *Client) SetChatHandler(fn func(nickName, msg string, ts int64)) { c.cha
 
 // SetLogHandler 注册日志回调，将关键事件推送到前端日志面板。
 func (c *Client) SetLogHandler(fn func(msg string)) { c.logHandler = fn }
+
+// SetOnLatencyUpdate 注册单个 peer 延迟变化回调（peerID, ms；-1 表示未知或离线）。
+func (c *Client) SetOnLatencyUpdate(fn func(peerID string, ms int64)) { c.onLatencyUpdate = fn }
 
 // clientLog 同时输出到 slog 和前端日志面板。
 func (c *Client) clientLog(level, msg string, args ...any) {
@@ -223,6 +242,12 @@ func (c *Client) Connect(serverAddr string) error {
 	// 启动持续读循环（使用 client 的 context）——握手 Pong 要靠它 dispatch 进 pongCh。
 	c.conn.Start(c.ctx, c.dispatch)
 
+	// pongLoop 作为 pongCh 的唯一消费者，持续算本端到服务器的 RTT。
+	// 必须在 PingServer 之前启动：握手 Pong 靠它落入 serverRTT。
+	go c.pongLoop()
+	// latencyEmitLoop 周期把各 peer 延迟增量推给前端。
+	go c.latencyEmitLoop()
+
 	// 握手：发 Ping 等 Pong，确认服务器真实可达。
 	// 只建本地 socket 不算"已连接"——服务器没开时 socket 照样建成功，
 	// 会导致前端误判已连接、进入房间页却永远收不到 RoomStatus（VIP 不分配、网卡不创建）。
@@ -308,6 +333,9 @@ func (c *Client) LeaveRoom() {
 	c.channelsMu.Unlock()
 
 	c.peerMgr.Reset()
+	c.latencyMu.Lock()
+	c.lastEmittedLatency = make(map[string]int64)
+	c.latencyMu.Unlock()
 	c.cfg.Room = ""
 
 	// 仍在线就保持 StateJoined 语义上的「已连接服务器、未进房」是 StateConnecting，
@@ -474,33 +502,168 @@ func (c *Client) SendVoiceToAll(payload []byte) error {
 
 // PingServer 向服务器发送 Ping 并等待 Pong，返回 RTT（毫秒）。
 //
-// Pong 由 dispatch 收到后塞进 pongCh，这里 select 取出，避免与 Start 读循环抢 socket。
+// 不直接读 pongCh：pongLoop 是 pongCh 的唯一消费者，每收一个 Pong 就算出 serverRTT
+// 并自增 pongSeq。这里发 Ping 后轮询 pongSeq 是否推进，推进即拿到一次有效 RTT；
+// 心跳运行时若恰有在飞 Pong，会取到心跳的 RTT，对握手/测试场景足够。
 func (c *Client) PingServer() (int64, error) {
 	if c.conn == nil || c.serverAddr == nil {
 		return 0, fmt.Errorf("未连接服务器")
 	}
-	// 清空 chan 里的陈旧 Pong（多次 ping 之间可能积压）。
-	for {
-		select {
-		case <-c.pongCh:
-		default:
-			goto sent
-		}
-	}
-sent:
-	ts := time.Now().UnixMilli()
-	ping := protocol.NewPing(c.cfg.PeerID, ts)
+	before := c.pongSeq.Load()
+	ping := protocol.NewPing(c.cfg.PeerID, time.Now().UnixMilli())
 	if err := c.conn.SendPacket(c.serverAddr, ping); err != nil {
 		return 0, fmt.Errorf("发送 Ping 失败: %w", err)
 	}
+	// 等 pongLoop 收到 Pong（pongSeq 推进）。心跳运行时若恰有在飞 Pong，会取到一次有效 RTT。
+	deadline := time.Now().Add(5 * time.Second)
+	for c.pongSeq.Load() <= before {
+		if time.Now().After(deadline) {
+			return 0, fmt.Errorf("等待 Pong 超时")
+		}
+		select {
+		case <-c.ctx.Done():
+			return 0, fmt.Errorf("客户端已停止")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	return c.serverRTT.Load(), nil
+}
 
-	select {
-	case pong := <-c.pongCh:
-		return time.Now().UnixMilli() - pong.Timestamp, nil
-	case <-time.After(5 * time.Second):
-		return 0, fmt.Errorf("等待 Pong 超时")
-	case <-c.ctx.Done():
-		return 0, fmt.Errorf("客户端已停止")
+// pongLoop 是 pongCh 的唯一消费者：每收到一个 Pong 就算出本端到服务器 RTT
+// 并自增 pongSeq，供 PingServer 检测"新 Pong 到达"。心跳 Pong 也由此捕获，
+// 使 serverRTT 在连接期间持续刷新。
+func (c *Client) pongLoop() {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case pong := <-c.pongCh:
+			rtt := time.Now().UnixMilli() - pong.Timestamp
+			if rtt < 0 || rtt > 30000 {
+				continue // 时钟回退或陈旧包，丢弃
+			}
+			c.serverRTT.Store(rtt)
+			c.pongSeq.Add(1)
+		}
+	}
+}
+
+// sendPeerMetrics 把本端自测的服务器 RTT 上报给服务端，由服务端广播给房间其他成员，
+// 供中转 peer 按"我方 SRTT + 对方 SRTT"估算延迟。每轮心跳顺带发一次，值未变也重发
+// 以保证刷新与补丢。
+func (c *Client) sendPeerMetrics() {
+	if c.serverAddr == nil || c.cfg.Room == "" {
+		return
+	}
+	rtt := c.serverRTT.Load()
+	if rtt <= 0 {
+		return
+	}
+	pkt := protocol.PeerMetricsPacket{
+		Packet: protocol.Packet{
+			Type:   protocol.TypePeerMetrics,
+			Room:   c.cfg.Room,
+			PeerID: c.cfg.PeerID,
+		},
+		ServerRTT: rtt,
+	}
+	_ = c.conn.SendPacket(c.serverAddr, pkt)
+}
+
+// handlePeerMetrics 收到他人自测的服务器 RTT：记到该 peer 名下，供中转延迟估算。
+func (c *Client) handlePeerMetrics(raw []byte) {
+	var pkt protocol.PeerMetricsPacket
+	if err := protocol.Decode(raw, &pkt); err != nil {
+		return
+	}
+	if pkt.PeerID == "" || pkt.PeerID == c.cfg.PeerID {
+		return // 自己的回环，忽略
+	}
+	c.peerMgr.SetPeerServerRTT(pkt.PeerID, pkt.ServerRTT)
+}
+
+// handlePeerPing 收到 P2P 延迟探测：回填同一时间戳的 FramePong，沿来路 remote 直发。
+// 走 remote 而非通道选路，确保即便本端到该 peer 的通道是 Relay（对端却直连成功）
+// 也能在直连路径上回包。服务端 relay 不转发 FramePing/FramePong，故这两类帧只走直连。
+func (c *Client) handlePeerPing(remote *net.UDPAddr, srcVIP uint32, payload []byte) {
+	ts, ok := protocol.DecodePingTS(payload)
+	if !ok {
+		return
+	}
+	selfVIP := c.peerMgr.Self().VirtualIP
+	if selfVIP == 0 {
+		return
+	}
+	frame := protocol.EncodeFrame(protocol.FramePong, selfVIP, srcVIP, protocol.EncodePingTS(ts))
+	_ = c.conn.SendRaw(remote, frame)
+}
+
+// handlePeerPong 收到 P2P 探测回包：据时间戳算 RTT，记到该 peer 名下。
+func (c *Client) handlePeerPong(srcVIP uint32, payload []byte) {
+	ts, ok := protocol.DecodePingTS(payload)
+	if !ok {
+		return
+	}
+	rtt := time.Now().UnixMilli() - ts
+	if rtt < 0 || rtt > 10000 {
+		return // 时钟跳变或陈旧，丢弃
+	}
+	p := c.peerMgr.GetByVIP(srcVIP)
+	if p == nil {
+		return
+	}
+	c.peerMgr.SetPeerP2PRTT(p.ID, rtt)
+}
+
+// GetPeerLatency 返回到指定 peer 的展示延迟（ms）：P2P 用实测 RTT，中转用双方 SRTT 之和。
+// 未知（未测到或通道未建立）返回 -1。
+func (c *Client) GetPeerLatency(peerID string) int64 {
+	switch c.GetPeerChannel(peerID) {
+	case "p2p":
+		if rtt := c.peerMgr.GetPeerP2PRTT(peerID); rtt > 0 {
+			return rtt
+		}
+	case "relay":
+		srtt := c.serverRTT.Load()
+		peerSRTT := c.peerMgr.GetPeerServerRTT(peerID)
+		if srtt > 0 && peerSRTT > 0 {
+			return srtt + peerSRTT
+		}
+	}
+	return -1
+}
+
+// latencyEmitLoop 每秒把各 peer 当前延迟与上次推送值比对，变化的增量推给前端。
+// 只读本地状态，零网络开销；仅对变化的 peer 触发 onLatencyUpdate。
+func (c *Client) latencyEmitLoop() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+			c.emitLatencies()
+		}
+	}
+}
+
+func (c *Client) emitLatencies() {
+	if c.onLatencyUpdate == nil {
+		return
+	}
+	for _, p := range c.peerMgr.List() {
+		lat := c.GetPeerLatency(p.ID)
+		c.latencyMu.Lock()
+		prev, ok := c.lastEmittedLatency[p.ID]
+		changed := !ok || lat != prev
+		if changed {
+			c.lastEmittedLatency[p.ID] = lat
+		}
+		c.latencyMu.Unlock()
+		if changed {
+			c.onLatencyUpdate(p.ID, lat)
+		}
 	}
 }
 
@@ -535,6 +698,8 @@ func (c *Client) heartbeatLoop() {
 			if err := c.conn.SendPacket(c.serverAddr, pkt); err != nil {
 				c.log.Warn("心跳发送失败", "err", err)
 			}
+			// 顺带上报本端服务器 RTT，供中转 peer 估算延迟。
+			c.sendPeerMetrics()
 		}
 	}
 }
@@ -544,7 +709,7 @@ func (c *Client) heartbeatLoop() {
 func (c *Client) dispatch(remote *net.UDPAddr, data []byte) {
 	// 优先识别紧凑二进制帧——数据通道流量占绝大多数，让它走 O(1) 分流。
 	if protocol.IsCompactFrame(data) {
-		c.handleCompactFrame(data)
+		c.handleCompactFrame(remote, data)
 		return
 	}
 
@@ -580,6 +745,8 @@ func (c *Client) dispatch(remote *net.UDPAddr, data []byte) {
 		c.handleChat(data)
 	case protocol.TypePeerStatus:
 		c.handlePeerStatus(data)
+	case protocol.TypePeerMetrics:
+		c.handlePeerMetrics(data)
 	}
 }
 
@@ -588,7 +755,7 @@ func (c *Client) dispatch(remote *net.UDPAddr, data []byte) {
 //   - FrameP2P / FrameRelay -> dataHandler（写虚拟网卡，裸 IP 包）
 //
 // 空载 payload（keepalive）直接丢弃，对上层透明。
-func (c *Client) handleCompactFrame(data []byte) {
+func (c *Client) handleCompactFrame(remote *net.UDPAddr, data []byte) {
 	frameType, srcVIP, _, payload, err := protocol.DecodeFrame(data)
 	if err != nil {
 		return
@@ -600,6 +767,12 @@ func (c *Client) handleCompactFrame(data []byte) {
 	buf := make([]byte, len(payload))
 	copy(buf, payload)
 	switch frameType {
+	case protocol.FramePing:
+		c.handlePeerPing(remote, srcVIP, buf)
+		return
+	case protocol.FramePong:
+		c.handlePeerPong(srcVIP, buf)
+		return
 	case protocol.FrameVoice:
 		if c.voiceHandler != nil {
 			c.voiceHandler(srcVIP, buf)
@@ -678,6 +851,9 @@ func (c *Client) handlePeerLeave(raw []byte) {
 	}
 
 	c.peerMgr.Remove(pkt.PeerID)
+	c.latencyMu.Lock()
+	delete(c.lastEmittedLatency, pkt.PeerID)
+	c.latencyMu.Unlock()
 	c.channelsMu.Lock()
 	if old, ok := c.channels[pkt.PeerID]; ok {
 		old.Close()

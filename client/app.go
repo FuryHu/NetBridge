@@ -82,6 +82,10 @@ func (a *App) startup(ctx context.Context) {
 	a.client.SetLogHandler(func(msg string) {
 		wailsRuntime.EventsEmit(a.ctx, "log:message", msg)
 	})
+	// 单个 peer 延迟变化（增量）：前端只更新对应成员卡的延迟徽标，避免重渲整列。
+	a.client.SetOnLatencyUpdate(func(peerID string, ms int64) {
+		wailsRuntime.EventsEmit(a.ctx, "latency:update", peerID, ms)
+	})
 	a.client.SetVoiceHandler(func(srcVIP uint32, payload []byte) {
 		if a.ctx == nil {
 			return
@@ -457,6 +461,7 @@ type PeerView struct {
 	VoiceOn    bool   `json:"voiceOn,omitempty"` // 是否开启语音（对方上报）
 	MicOn      bool   `json:"micOn,omitempty"`   // 是否开麦（对方上报）
 	IsIPv6     bool   `json:"isIPv6"`  // P2P 通道是否走 IPv6（self 则看 PublicAddress 是否 v6）
+	Latency    int64 `json:"latency"`  // 到该 peer 的展示延迟（ms）；-1 表示未知。P2P=实测 RTT，中转=双方 SRTT 之和
 }
 
 // selfToView 把自己的 PeerInfo 转成前端视图。
@@ -500,6 +505,7 @@ func (a *App) peersToViews(peers []protocol.PeerInfo) []PeerView {
 			VoiceOn:    p.VoiceOn,
 			MicOn:      p.MicOn,
 			IsIPv6:     isV6,
+			Latency:    a.client.GetPeerLatency(p.ID),
 		})
 	}
 	// 按 VIP 排序，保证顺序稳定

@@ -29,20 +29,21 @@ type Channel interface {
 	Close()
 }
 
-// keepaliveInterval 是 P2P 通道用于维持 NAT 表项的心跳间隔。
+// p2pPingInterval 是 P2P 通道的延迟探测 + NAT keepalive 合一间隔。
 //
-// 国内家用路由器 UDP NAT 表项老化时间普遍 30–60 秒；
-// 设 15 秒能在大多数路由器上稳住一条 P2P 路径。若发现仍有 NAT 老化掉线问题，
-// 可调到 10 秒，但代价是更多无效流量。
-const keepaliveInterval = 15 * time.Second
+// 国内家用路由器 UDP NAT 表项老化时间普遍 30–60 秒；3 秒远在其内，稳。
+// 同时它也是成员卡延迟读数的刷新粒度——ping 携带时间戳，对端回 pong 算 RTT。
+// 想更省流量可调大（如 5s），但延迟显示会变钝；ping 本身极小，远小于语音 50pps。
+const p2pPingInterval = 3 * time.Second
 
 // P2PChannel 直连通道：把负载封进紧凑二进制帧后发到对端公网地址。
 //
 // 之所以必须封一层帧而不是裸发：对端的 UDP 读循环 dispatch 是同一个 socket，
 // 既要接服务端的 JSON 信令、又要接 peer 的数据，必须有 magic 让分流逻辑识别。
 //
-// 通道创建时启动后台 keepalive goroutine，每 keepaliveInterval 秒往对端发一个
-// 0 长度的紧凑 P2P 帧维持 NAT 表项。Close 时停止。
+// 通道创建时启动后台 ping goroutine，每 p2pPingInterval 秒往对端发一个 FramePing
+// （携带毫秒时间戳）——既测 RTT 又维持 NAT 表项，对端回 FramePong 也顺带维持反向 NAT。
+// Close 时停止。
 type P2PChannel struct {
 	conn     *UDPConn
 	peerAddr *net.UDPAddr
@@ -62,7 +63,7 @@ func NewP2PChannel(conn *UDPConn, peerAddr *net.UDPAddr, srcVIP, dstVIP uint32) 
 		dstVIP:   dstVIP,
 		stopCh:   make(chan struct{}),
 	}
-	go c.keepaliveLoop()
+	go c.pingLoop()
 	return c
 }
 
@@ -87,20 +88,20 @@ func (c *P2PChannel) Close() {
 // PeerAddr 返回对端地址，供上层判断是否需要更新。
 func (c *P2PChannel) PeerAddr() *net.UDPAddr { return c.peerAddr }
 
-// keepaliveLoop 周期性向对端发空载 P2P 帧——既维持 NAT 表项，
-// 也能让对端在 P2P 路径意外失效时尽快观测到（结合 SetReadDeadline 监控时可用）。
+// pingLoop 周期性向对端发 FramePing（携带本端时间戳）——既测 RTT，又维持 NAT 表项。
 //
-// 空载帧 payload 为空，对端 handleCompactFrame 会因 len(payload)==0 直接丢弃，
-// 不会进入 dataHandler，对上层透明。
-func (c *P2PChannel) keepaliveLoop() {
-	t := time.NewTicker(keepaliveInterval)
+// 对端 handleCompactFrame 收到 FramePing 后回 FramePong，本端据回包时间戳算 RTT。
+// 这同时充当 keepalive：ping 出向维持本端 NAT，对端回 pong 也维持对端出向 NAT。
+// 比旧"空载 keepalive"多携带 8 字节时间戳，开销可忽略。
+func (c *P2PChannel) pingLoop() {
+	t := time.NewTicker(p2pPingInterval)
 	defer t.Stop()
 	for {
 		select {
 		case <-c.stopCh:
 			return
 		case <-t.C:
-			_ = c.Send(nil)
+			_ = c.SendTyped(protocol.FramePing, protocol.EncodePingTS(time.Now().UnixMilli()))
 		}
 	}
 }

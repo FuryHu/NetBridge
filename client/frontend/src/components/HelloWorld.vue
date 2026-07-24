@@ -123,7 +123,8 @@ function peerTitle(p) {
   const ch = p.channel === 'p2p' ? t('peer.channelP2P') : p.channel === 'relay' ? t('peer.channelRelay') : t('peer.channelPending')
   const proto = isPeerV6(p) ? ' · IPv6' : (p.channel === 'p2p' ? ' · IPv4' : '')
   const v6 = peerHasV6(p) && !isPeerV6(p) ? '\n' + t('peer.candidateV6') + (p.v6 || p.V6) : ''
-  return `${p.nickName} · VIP: ${p.vip} · ${ch}${proto}${v6}`
+  const lat = p.latency >= 0 ? ' · ' + p.latency + 'ms' : ''
+  return `${p.nickName} · VIP: ${p.vip} · ${ch}${proto}${lat}${v6}`
 }
 // 把后端的 status 字符串映射成视觉颜色 token——使用规范里的 4 个状态色之一。
 function statusColor(s) {
@@ -366,6 +367,12 @@ function reportVoiceStatus() {
 }
 function channelLabel(p) {
   return p.channel === 'p2p' ? t('peer.channelP2P') : p.channel === 'relay' ? t('peer.channelRelay') : t('peer.channelPending')
+}
+// 延迟徽标颜色档：<80ms 绿 / <150ms 黄 / 否则红。
+function latencyClass(ms) {
+  if (ms < 80) return 'lat-good'
+  if (ms < 150) return 'lat-ok'
+  return 'lat-bad'
 }
 async function copyText(text) {
   if (!text) return false
@@ -632,6 +639,11 @@ onMounted(() => {
   })
   EventsOn('chat:message', (c) => { addChat(c.nickName, c.message, c.timestamp) })
   EventsOn('log:message', (msg) => { addLog(msg) })
+  // 单个 peer 延迟增量更新：只改对应成员卡的徽标，不重渲整列。
+  EventsOn('latency:update', (peerID, ms) => {
+    const p = data.allPeers.find(x => x.id === peerID)
+    if (p) p.latency = ms
+  })
   // 托盘右键"切换语音" -> 复用全局语音开关（状态权威仍在前端，后端只转发事件）
   EventsOn('tray:toggle-voice', () => toggleVoiceEnabled())
   // 托盘恢复窗口 -> 触发剪贴板邀请自检（v2）
@@ -653,6 +665,7 @@ onUnmounted(() => {
   EventsOff('self:update')
   EventsOff('chat:message')
   EventsOff('log:message')
+  EventsOff('latency:update')
   EventsOff('tray:toggle-voice')
   EventsOff('window:shown')
   if (refreshTimer) clearInterval(refreshTimer)
@@ -811,6 +824,7 @@ onUnmounted(() => {
             <span v-if="p.channel === 'p2p'" class="member-channel ch-p2p">P2P</span>
             <span v-else-if="p.channel === 'relay'" class="member-channel ch-relay">{{ t('peer.badgeRelay') }}</span>
             <span v-else class="member-channel ch-pending">…</span>
+            <span v-if="p.latency >= 0" class="member-latency" :class="latencyClass(p.latency)" :title="t('peer.infoLatency')">{{ p.latency }}ms</span>
           </li>
         </ul>
         <!-- 成员浮层：信息卡(左键) + 右键菜单，同时只显示一个；点遮罩 / ESC 关闭 -->
@@ -843,6 +857,10 @@ onUnmounted(() => {
           <div class="info-row">
             <span class="info-k">{{ t('peer.infoMic') }}</span>
             <span class="info-v" :class="activePeer.micOn ? 'st-on' : 'st-off'">{{ activePeer.micOn ? t('peer.infoOn') : t('peer.infoOff') }}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-k">{{ t('peer.infoLatency') }}</span>
+            <span class="info-v">{{ activePeer.latency >= 0 ? activePeer.latency + ' ms' : '-' }}</span>
           </div>
         </div>
         <!-- 右键菜单：音量 + 静音（数据驱动，便于以后扩展） -->
@@ -1643,6 +1661,18 @@ onUnmounted(() => {
 .ch-pending {
   color: var(--color-text-disabled);
 }
+.member-latency {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 5px;
+  border-radius: var(--radius-pill);
+  letter-spacing: 0.02em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.lat-good { background: var(--color-success-soft); color: var(--color-success); }
+.lat-ok   { background: var(--color-warning-soft); color: var(--color-warning); }
+.lat-bad  { background: var(--color-danger-soft); color: var(--color-danger); }
 
 /* 中央聊天区 */
 .chat {

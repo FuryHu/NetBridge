@@ -11,6 +11,7 @@ export namespace main {
 	    voiceOn?: boolean;
 	    micOn?: boolean;
 	    isIPv6: boolean;
+	    latency: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new PeerView(source);
@@ -28,6 +29,7 @@ export namespace main {
 	        this.voiceOn = source["voiceOn"];
 	        this.micOn = source["micOn"];
 	        this.isIPv6 = source["isIPv6"];
+	        this.latency = source["latency"];
 	    }
 	}
 

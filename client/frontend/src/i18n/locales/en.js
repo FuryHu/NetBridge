@@ -69,6 +69,7 @@ export default {
   'peer.infoChannel': 'Connection',
   'peer.infoVoice': 'Voice',
   'peer.infoMic': 'Microphone',
+  'peer.infoLatency': 'Latency',
   'peer.infoOn': 'On',
   'peer.infoOff': 'Off',
   'peer.copy': 'Copy',

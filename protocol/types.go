@@ -102,3 +102,12 @@ type PeerStatusPacket struct {
 	VoiceOn bool `json:"voiceOn,omitempty"` // 是否开启语音功能
 	MicOn   bool `json:"micOn,omitempty"`   // 是否开麦（采集）
 }
+
+// PeerMetricsPacket peer 自测到服务器的 RTT 上报（C -> S -> C 广播）。
+// 客户端每轮心跳测得自身 serverRTT 后上报，服务端转发给房间其他成员；
+// 中转路径延迟 ≈ 我方 SRTT + 对方 SRTT，从而无需对中转 peer 逐一发探测包。
+// 服务端不保存该值，仅原样广播。PeerID 标识 RTT 归属者（发送时填自己）。
+type PeerMetricsPacket struct {
+	Packet
+	ServerRTT int64 `json:"srtt"` // 该 peer 自测的到服务器 RTT（毫秒）
+}

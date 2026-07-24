@@ -69,6 +69,7 @@ export default {
   'peer.infoChannel': '接続方式',
   'peer.infoVoice': '音声',
   'peer.infoMic': 'マイク',
+  'peer.infoLatency': '遅延',
   'peer.infoOn': 'オン',
   'peer.infoOff': 'オフ',
   'peer.copy': 'コピー',

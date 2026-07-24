@@ -34,6 +34,11 @@ const (
 	// 服务端更新该 peer 状态后广播给房间其他成员。
 	TypePeerStatus PacketType = "peer_status"
 
+	// TypePeerMetrics peer 自测的到服务器 RTT 上报（C -> S -> C 广播）。
+	// 客户端每轮心跳测得自身 serverRTT 后上报，服务端转发给房间其他成员；
+	// 中转路径延迟 ≈ 我方 SRTT + 对方 SRTT，从而无需对中转 peer 发探测包。
+	TypePeerMetrics PacketType = "peer_metrics"
+
 	// TypeCompactFrame 表示一条紧凑二进制数据帧（P2P / Relay）。
 	// 这个值不会出现在 JSON 报文里，仅供服务端 / 客户端 dispatch 内部分流使用。
 	TypeCompactFrame PacketType = "__frame__"

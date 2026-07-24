@@ -68,6 +68,7 @@ export default {
   'peer.infoChannel': '连接方式',
   'peer.infoVoice': '语音',
   'peer.infoMic': '麦克风',
+  'peer.infoLatency': '延迟',
   'peer.infoOn': '已开启',
   'peer.infoOff': '已关闭',
   'peer.copy': '复制',

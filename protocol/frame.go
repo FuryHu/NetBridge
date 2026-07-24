@@ -36,8 +36,35 @@ const (
 	// 服务端可按 srcVIP 识别并扇出某人的语音流，无需改协议。
 	FrameVoice byte = 3
 
+	// FramePing / FramePong P2P 延迟探测：payload 为 8 字节小端 int64 毫秒时间戳。
+	//   - ping 携带发送方本地时间戳；
+	//   - pong 回填同一时间戳，发送方据此算 RTT。
+	// 仅走 P2P 直连（服务端 relay 不转发这两类帧）；中转 peer 的延迟用"双方 SRTT 之和"
+	// 估算，见 PeerMetricsPacket。每条 P2P 通道的 ping 同时充当 NAT keepalive——
+	// 故 ping 间隔即 keepalive 间隔，pong 回包也顺带维持反向 NAT。
+	FramePing byte = 4
+	FramePong byte = 5
+
 	FrameHeaderSize = 12
 )
+
+// PingPayloadSize 延迟探测帧 payload 长度：8 字节小端 int64 毫秒时间戳。
+const PingPayloadSize = 8
+
+// EncodePingTS 把毫秒时间戳编码为延迟探测帧 payload。
+func EncodePingTS(ts int64) []byte {
+	b := make([]byte, PingPayloadSize)
+	binary.LittleEndian.PutUint64(b, uint64(ts))
+	return b
+}
+
+// DecodePingTS 从延迟探测帧 payload 解出时间戳。长度不足返回 ok=false。
+func DecodePingTS(b []byte) (ts int64, ok bool) {
+	if len(b) < PingPayloadSize {
+		return 0, false
+	}
+	return int64(binary.LittleEndian.Uint64(b[:PingPayloadSize])), true
+}
 
 // ErrShortFrame 表示帧长度不足以容纳头部。
 var ErrShortFrame = errors.New("frame too short")
