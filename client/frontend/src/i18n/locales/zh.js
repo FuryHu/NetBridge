@@ -2,22 +2,33 @@
 // 主 UI 文案。日志面板的消息保持中文（见 README 国际化说明：后端 Go 日志同样流入该面板，
 // 整体保持中文以避免中英混排；如需翻译前端日志可在此扩充）。
 export default {
-  // 连接服务器页
-  'connect.title': '连接服务器',
+  // 合并加入表单：服务器 + 房间/邀请 + 昵称。
+  // connect.* 复用为服务器栏占位 / 连接态 / 连接错误文案（旧 connect.title/button 已随两步表单移除）。
   'connect.placeholder': '服务器地址，例如 1.2.3.4:10555',
-  'connect.button': '连接',
   'connect.connecting': '连接中…',
   'connect.failed': '连接失败：',
 
-  // 加入房间页
-  'join.title': '加入房间',
-  'join.roomPlaceholder': '房间号',
-  'join.namePlaceholder': '昵称',
+  // 加入房间
+  'join.serverLabel': '服务器',
+  'join.roomLabel': '房间',
+  'join.roomOrInvitePlaceholder': '房间号 / 粘贴邀请链接',
+  'join.nameLabel': '昵称',
+  'join.namePlaceholder': '留空自动生成',
   'join.button': '加入',
+  'join.test': '测试',
+  'join.testOk': '测试成功 · {ms} 毫秒',
+  'join.testFail': '测试失败',
+
+  // 邀请
+  'invite.parsed': '已识别邀请，房间 {room}',
+  'invite.detected': '检测到邀请：{room} @ {server}',
+  'invite.join': '加入',
+  'invite.ignore': '忽略',
 
   // 语音
   'voice.on': '语音开',
   'voice.off': '语音关',
+  'voice.enableLabel': '启用语音',
   'voice.enabledTip': '语音已启用（点击关闭）',
   'voice.disabledTip': '语音已关闭（点击开启）',
   'voice.micOn': '开麦',
@@ -30,12 +41,10 @@ export default {
 
   // 顶栏
   'topbar.log': '日志',
-  'topbar.leaveRoom': '退出房间',
   'topbar.disconnect': '断开',
-  'topbar.vipTip': '虚拟 IP',
-  'topbar.tunTip': '虚拟网卡已激活',
-  'topbar.ipv6Tip': '服务端可经 IPv6 联系到本机',
-  'topbar.ipv4Tip': '仅 IPv4 公网端点',
+  'topbar.vipTip': '虚拟 IP · 点击复制',
+  'topbar.copied': '已复制',
+  'topbar.roomCopyTip': '点击复制邀请链接',
 
   // 成员
   'members.title': '成员',
@@ -78,8 +87,7 @@ export default {
   // 确认弹窗
   'modal.cancel': '取消',
   'modal.confirm': '确定',
-  'modal.confirmDisconnect': '确定要断开连接吗？',
-  'modal.confirmLeaveRoom': '确定要退出房间吗？',
+  'modal.confirmDisconnect': '确定要断开连接吗？将退出当前房间。',
 
   // 语言切换
   'lang.label': '语言',

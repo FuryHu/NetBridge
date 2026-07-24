@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/FuryHu/netbridge/client/core"
 	"github.com/FuryHu/netbridge/client/tun"
@@ -133,9 +135,11 @@ func (a *App) onBeforeClose(ctx context.Context) (prevent bool) {
 }
 
 // showFromTray 托盘"显示主窗口" / 双击图标：从托盘恢复窗口。
+// 恢复时推 window:shown 事件，供前端做"窗口重获焦点"相关逻辑（如剪贴板邀请自检）。
 func (a *App) showFromTray() {
 	if a.ctx != nil {
 		wailsRuntime.WindowShow(a.ctx)
+		wailsRuntime.EventsEmit(a.ctx, "window:shown")
 	}
 }
 
@@ -362,6 +366,49 @@ func (a *App) PingServer(addr string) (int64, error) {
 		}
 	}
 	return a.client.PingServer()
+}
+
+// TestServer 对指定服务器做一次性 UDP Ping/Pong 探测，返回 RTT（毫秒）。
+// 不建立持久连接、不影响 client 状态--仅供"加入前测试服务器连通性"。
+// 编码走 protocol.Encode（JSON），与 cmd/ping 同款，服务端 ping_handler 可识别。
+func (a *App) TestServer(addr string) (int64, error) {
+	resolved, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return 0, fmt.Errorf("解析地址失败: %w", err)
+	}
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
+	if err != nil {
+		return 0, fmt.Errorf("创建 socket 失败: %w", err)
+	}
+	defer conn.Close()
+
+	ts := time.Now().UnixMilli()
+	data, err := protocol.Encode(protocol.NewPing("test", ts))
+	if err != nil {
+		return 0, fmt.Errorf("编码 Ping 失败: %w", err)
+	}
+	if _, err := conn.WriteToUDP(data, resolved); err != nil {
+		return 0, fmt.Errorf("发送 Ping 失败: %w", err)
+	}
+
+	// 收到 Pong 即算 RTT；非 Pong 报文忽略，5s 内无 Pong 视为超时。
+	buf := make([]byte, protocol.ReadBufferSize)
+	for {
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		n, _, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			return 0, fmt.Errorf("等待 Pong 超时")
+		}
+		ptype, err := protocol.PeekType(buf[:n])
+		if err != nil || ptype != protocol.TypePong {
+			continue
+		}
+		var pong protocol.PongPacket
+		if err := protocol.Decode(buf[:n], &pong); err != nil {
+			continue
+		}
+		return time.Now().UnixMilli() - pong.Timestamp, nil
+	}
 }
 
 // GetPeers 返回当前房间内的 peer 列表。

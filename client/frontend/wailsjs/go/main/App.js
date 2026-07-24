@@ -61,3 +61,7 @@ export function SetTrayMenuState(arg1, arg2, arg3, arg4) {
 export function SetVoiceStatus(arg1, arg2) {
   return window['go']['main']['App']['SetVoiceStatus'](arg1, arg2);
 }
+
+export function TestServer(arg1) {
+  return window['go']['main']['App']['TestServer'](arg1);
+}

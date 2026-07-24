@@ -2,22 +2,34 @@
 // メインUI文字列。ログパネルのメッセージは除外（READMEのi18n注記参照：
 // バックエンドのGoログが同じパネルに流れるため、一貫性を保つ）。
 export default {
-  // サーバー接続ページ
-  'connect.title': 'サーバーに接続',
+  // 統合参加フォーム：サーバー + ルーム/招待 + ニックネーム。
+  // connect.* はサーバー欄プレースホルダ / 接続中 / エラーに再利用
+  // （旧 connect.title/button は二段階フォームと共に削除）。
   'connect.placeholder': 'サーバーアドレス（例: 1.2.3.4:10555）',
-  'connect.button': '接続',
   'connect.connecting': '接続中…',
   'connect.failed': '接続失敗: ',
 
-  // ルーム参加ページ
-  'join.title': 'ルームに参加',
-  'join.roomPlaceholder': 'ルームID',
-  'join.namePlaceholder': 'ニックネーム',
+  // ルーム参加
+  'join.serverLabel': 'サーバー',
+  'join.roomLabel': 'ルーム',
+  'join.roomOrInvitePlaceholder': 'ルームID / 招待リンクを貼り付け',
+  'join.nameLabel': '名前',
+  'join.namePlaceholder': '空欄で自動生成',
   'join.button': '参加',
+  'join.test': 'テスト',
+  'join.testOk': '成功 · {ms} ms',
+  'join.testFail': '失敗',
+
+  // 招待
+  'invite.parsed': '招待を認識しました - ルーム {room}',
+  'invite.detected': '招待を検出：{room} @ {server}',
+  'invite.join': '参加',
+  'invite.ignore': '無視',
 
   // 音声
   'voice.on': '音声オン',
   'voice.off': '音声オフ',
+  'voice.enableLabel': '音声を有効化',
   'voice.enabledTip': '音声有効（クリックで無効化）',
   'voice.disabledTip': '音声無効（クリックで有効化）',
   'voice.micOn': 'ミュート解除',
@@ -30,12 +42,10 @@ export default {
 
   // トップバー
   'topbar.log': 'ログ',
-  'topbar.leaveRoom': '退室',
   'topbar.disconnect': '切断',
-  'topbar.vipTip': '仮想IP',
-  'topbar.tunTip': '仮想NIC有効',
-  'topbar.ipv6Tip': 'IPv6で到達可能',
-  'topbar.ipv4Tip': 'IPv4のみ',
+  'topbar.vipTip': '仮想IP · クリックでコピー',
+  'topbar.copied': 'コピー済み',
+  'topbar.roomCopyTip': 'クリックで招待リンクをコピー',
 
   // メンバー
   'members.title': 'メンバー',
@@ -78,8 +88,7 @@ export default {
   // 確認ダイアログ
   'modal.cancel': 'キャンセル',
   'modal.confirm': '確認',
-  'modal.confirmDisconnect': 'サーバーから切断しますか？',
-  'modal.confirmLeaveRoom': 'ルームを退室しますか？',
+  'modal.confirmDisconnect': 'サーバーから切断しますか？現在のルームを退室します。',
 
   // 言語切替
   'lang.label': '言語',

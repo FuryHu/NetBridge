@@ -1,7 +1,7 @@
 <script setup>
 import {reactive, onMounted, onUnmounted, nextTick, ref, computed, watch} from 'vue'
-import {Connect, Disconnect, JoinRoom, LeaveRoom, GetPeers, GetSelf, GetStatus, SendChat, OpenURL, SetTrayMenuState, SetVoiceStatus} from '../../wailsjs/go/main/App'
-import {EventsOn, EventsOff, WindowHide} from '../../wailsjs/runtime/runtime'
+import {Connect, Disconnect, JoinRoom, LeaveRoom, GetPeers, GetSelf, GetStatus, SendChat, OpenURL, SetTrayMenuState, SetVoiceStatus, TestServer} from '../../wailsjs/go/main/App'
+import {EventsOn, EventsOff, WindowHide, ClipboardGetText} from '../../wailsjs/runtime/runtime'
 import {startVoice} from '../voice'
 import {locale, t, setLocale, LANGS} from '../i18n'
 import MicIcon from './MicIcon.vue'
@@ -28,8 +28,17 @@ const data = reactive({
   connected: false,
   connecting: false,
   connectError: '',
+  // 服务器测试：testing 进行中、testOk 成功态、testResult 展示串（"{ms} 毫秒" 或 "失败: ..."）。
+  testing: false,
+  testOk: false,
+  testResult: '',
+  // 房间框粘贴 netbridge:// 邀请时填充，供提示条展示。
+  inviteParsed: null,
+  // v2 剪贴板自检：检测到可解析邀请时填充，弹出 toast。
+  clipInvite: null,
+  // 去重：上次检查过的剪贴板串，相同不重复弹。
+  lastClipChecked: '',
   joined: false,
-  tunActive: false,
   chat: [],
   log: [],
   micOn: false,
@@ -125,6 +134,15 @@ function statusColor(s) {
   return 'muted'
 }
 
+// statusTitle：状态文案 + 协议栈，作为状态徽标的 hover title。
+// 协议栈信息从原 IPv4/IPv6 徽标下沉到这里，不再常驻顶栏。
+const statusTitle = computed(() => {
+  let s = t('status.' + statusKey(data.status))
+  if (data.self.isIPv6) s += ' · IPv6'
+  else if (data.self.v4) s += ' · IPv4'
+  return s
+})
+
 function addLog(msg) {
   data.log.push(`[${new Date().toLocaleTimeString()}] ${msg}`)
   if (data.log.length > 200) data.log.shift()
@@ -139,23 +157,74 @@ function isMine(nick) { return nick === data.self.nickName || nick === data.nick
 
 // ---- 操作 ----
 
-async function doConnect() {
-  const addr = data.serverAddr.trim()
-  if (!addr || data.connecting) return
+// doJoin 合并原"连接服务器 + 加入房间"两步为一次操作。
+// 未进房时表单点击加入：必要时先断开旧连接（后端 Disconnect 已含退房，且避免
+// Connect 覆盖未关 socket 泄漏），再 Connect -> JoinRoom。仿 autoConnect 序列。
+async function doJoin() {
+  if (data.connecting) return
+  const server = data.serverAddr.trim()
+  if (!server) { data.connectError = '请填写服务器地址'; return }
+  const room = data.room.trim() || 'default'
+  const name = data.nickName.trim() || 'Player' + Math.floor(Math.random() * 1000)
+  data.room = room
+  data.nickName = name
   data.connecting = true
   data.connectError = ''
-  addLog(`连接 ${addr} ...`)
+  addLog(`加入 ${server} / ${room} (${name}) ...`)
   try {
-    await Connect(addr)
+    if (data.connected) {
+      await Disconnect()
+      data.connected = false
+    }
+    await Connect(server)
     data.connected = true
-    saveHistory({ serverAddr: addr, room: data.room, nickName: data.nickName })
     addLog('✓ 已连接')
-    refreshStatus()
+    await refreshStatus()
+    await JoinRoom(room, name)
+    data.joined = true
+    // 占位显示，self:update 到达后替换为带 VIP/公网端点的完整数据。
+    data.self = {id: '', nickName: name, vip: '', publicAddr: '', v4: '', v6: '', isIPv6: false}
+    saveHistory({ serverAddr: server, room, nickName: name })
+    addLog('✓ 已加入房间')
   } catch (e) {
     data.connectError = String(e)
-    addLog('✗ 连接失败: ' + e)
+    addLog('✗ 加入失败: ' + e)
   } finally {
     data.connecting = false
+  }
+}
+
+// 房间框既是房间号输入、也接受粘贴 netbridge:// 邀请串：命中即填 server/room + 提示条。
+function onRoomInput(e) {
+  const inv = parseInvite(e.target.value)
+  if (inv) {
+    data.serverAddr = inv.server
+    data.inviteParsed = inv
+    // 等 v-model 把 URL 写入 data.room 后，再替换为解析出的房间名。
+    nextTick(() => { data.room = inv.room })
+  } else {
+    data.inviteParsed = null
+  }
+}
+
+// doTestServer 一次性探测服务器连通性（不建持久连接），显示 RTT 或失败。
+async function doTestServer() {
+  const addr = data.serverAddr.trim()
+  if (!addr || data.testing) return
+  data.testing = true
+  data.testOk = false
+  data.testResult = ''
+  try {
+    const ms = await TestServer(addr)
+    data.testOk = true
+    data.testResult = t('join.testOk', {ms})
+    addLog(`✓ 服务器可达 ${addr} (${ms}ms)`)
+  } catch (e) {
+    data.testOk = false
+    data.testResult = t('join.testFail') + ': ' + e
+    addLog('✗ 服务器测试失败: ' + e)
+  } finally {
+    data.testing = false
   }
 }
 
@@ -182,49 +251,8 @@ async function doDisconnect() {
   })
 }
 
-async function doJoinRoom() {
-  const room = data.room.trim() || 'default'
-  const name = data.nickName.trim() || 'Player' + Math.floor(Math.random() * 1000)
-  data.room = room
-  data.nickName = name
-  addLog(`加入 ${room} (${name}) ...`)
-  try {
-    await JoinRoom(room, name)
-    data.joined = true
-    // 立即占位显示，避免"自己名字过一会儿才出现"——
-    // RoomStatus 到达后 self:update 事件会把这块替换为带 VIP/公网端点的完整数据。
-    data.self = {id: '', nickName: name, vip: '', publicAddr: '', v4: '', v6: '', isIPv6: false}
-    saveHistory({ serverAddr: data.serverAddr, room, nickName: name })
-    addLog('✓ 已加入房间')
-  } catch (e) {
-    addLog('✗ 加入失败: ' + e)
-  }
-}
-
-function doLeaveRoom() {
-  showConfirm('modal.confirmLeaveRoom', () => {
-    LeaveRoom()
-    if (data.voice) { data.voice.stop(); data.voice = null }
-    data.micOn = false
-    data.micLevel = 0
-    data.selfSpeaking = false
-    data.speaking = {}
-    data.peerVols = {}
-    data.peerMutes = {}
-    data.activePeerVIP = null
-    for (const k in peerLevelTimers) clearTimeout(peerLevelTimers[k])
-    peerLevelTimers = {}
-    if (selfSpeakTimer) { clearTimeout(selfSpeakTimer); selfSpeakTimer = null }
-    data.joined = false
-    data.allPeers = []
-    data.chat = []
-    data.self = {id: '', nickName: '', vip: '', publicAddr: '', v4: '', v6: '', isIPv6: false}
-    addLog('已退出房间')
-  })
-}
-
 // 网卡的开启/关闭已由后端在 onSelfUpdate / LeaveRoom 时自动管理——
-// 前端只需订阅 tun:active 事件维护顶栏 TUN 徽标的显示。
+// 其状态恒等于「已进房」无信息量，创建失败已由后端写入日志，前端不再展示徽标。
 
 function doSendChat() {
   const m = chatMsg.value.trim()
@@ -340,8 +368,71 @@ function channelLabel(p) {
   return p.channel === 'p2p' ? t('peer.channelP2P') : p.channel === 'relay' ? t('peer.channelRelay') : t('peer.channelPending')
 }
 async function copyText(text) {
-  if (!text) return
-  try { await navigator.clipboard.writeText(text) } catch (e) {}
+  if (!text) return false
+  try { await navigator.clipboard.writeText(text); return true } catch (e) { return false }
+}
+// VIP 复制：成功后徽标短暂切到「✓ 已复制」绿色态，1.2s 后恢复显示 IP。
+const vipCopied = ref(false)
+let vipCopiedTimer = null
+async function copyVIP() {
+  const v = data.self.vip
+  if (!v || !(await copyText(v))) return
+  vipCopied.value = true
+  if (vipCopiedTimer) clearTimeout(vipCopiedTimer)
+  vipCopiedTimer = setTimeout(() => { vipCopied.value = false }, 1200)
+}
+
+// ---- 邀请串 ----
+// netbridge://join?s=<server>&r=<room>（s 必带；暂无默认服务器故不可省）。
+// 用此格式以便将来 v3 深链（URL scheme + 单实例）零返工消费同一串。
+function buildInvite(server, room) {
+  return `netbridge://join?s=${encodeURIComponent(server)}&r=${encodeURIComponent(room)}`
+}
+function parseInvite(text) {
+  if (typeof text !== 'string') return null
+  const m = text.trim().match(/^netbridge:\/\/join\?(.*)$/)
+  if (!m) return null
+  const params = new URLSearchParams(m[1])
+  const server = params.get('s')
+  const room = params.get('r')
+  if (!server || !room) return null
+  return {server, room}
+}
+
+// 点击房间名复制邀请链接：复用 copyVIP 的"✓ 已复制"短暂高亮。
+const roomCopied = ref(false)
+let roomCopiedTimer = null
+async function copyRoom() {
+  if (!data.joined) return
+  const v = data.room
+  if (!v || !data.serverAddr || !(await copyText(buildInvite(data.serverAddr, v)))) return
+  roomCopied.value = true
+  if (roomCopiedTimer) clearTimeout(roomCopiedTimer)
+  roomCopiedTimer = setTimeout(() => { roomCopied.value = false }, 1200)
+}
+
+// ---- v2 剪贴板邀请自检 ----
+// 启动后（autoConnect 结算后）与托盘恢复窗口时各检查一次：剪贴板含可解析邀请且
+// 未进房 -> 弹 toast 一键加入。lastClipChecked 去重，避免同一串反复弹。
+async function checkClipboardInvite() {
+  if (data.joined || data.connecting) return
+  try {
+    const text = await ClipboardGetText()
+    if (!text || text === data.lastClipChecked) return
+    data.lastClipChecked = text
+    const inv = parseInvite(text)
+    if (inv) data.clipInvite = inv
+  } catch {}
+}
+function dismissClipInvite() { data.clipInvite = null }
+async function joinFromClipboard() {
+  const inv = data.clipInvite
+  data.clipInvite = null
+  if (!inv) return
+  data.serverAddr = inv.server
+  data.room = inv.room
+  data.inviteParsed = inv
+  await doJoin()
 }
 // 信息卡（左键）：只读展示对方连接信息 + 一键复制 IP/端点。再点同一项即收起。
 function openPeerInfo(p, e) {
@@ -501,7 +592,7 @@ onMounted(() => {
       if (!refreshTimer) refreshTimer = setInterval(refreshStatus, 2000)
     }
     // 注意：不在「连接中」时置 connected=true——握手期间后端状态先到「连接中」，
-    // 若此时翻页会过早进入房间页。connected 由 doConnect/autoConnect 握手成功后显式置位。
+    // 若此时翻页会过早进入房间页。connected 由 doJoin/autoConnect 握手成功后显式置位。
     if (statusKey(s) === 'disconnected') {
       data.connected = false; data.joined = false
       if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
@@ -541,15 +632,18 @@ onMounted(() => {
   })
   EventsOn('chat:message', (c) => { addChat(c.nickName, c.message, c.timestamp) })
   EventsOn('log:message', (msg) => { addLog(msg) })
-  EventsOn('tun:active', (active) => { data.tunActive = !!active })
   // 托盘右键"切换语音" -> 复用全局语音开关（状态权威仍在前端，后端只转发事件）
   EventsOn('tray:toggle-voice', () => toggleVoiceEnabled())
+  // 托盘恢复窗口 -> 触发剪贴板邀请自检（v2）
+  EventsOn('window:shown', () => checkClipboardInvite())
   // 初次推送托盘菜单状态（watch 只在变化时触发，挂载时需手动推一次）
   syncTray()
   // F2 快捷开关麦克风
   window.addEventListener('keydown', onKeydown)
   // 尝试自动连接
   setTimeout(autoConnect, 500)
+  // 自动连接结算后，若仍未进房，检查剪贴板是否含邀请（v2）
+  setTimeout(checkClipboardInvite, 800)
 })
 onUnmounted(() => {
   if (data.voice) { data.voice.stop(); data.voice = null }
@@ -559,9 +653,11 @@ onUnmounted(() => {
   EventsOff('self:update')
   EventsOff('chat:message')
   EventsOff('log:message')
-  EventsOff('tun:active')
   EventsOff('tray:toggle-voice')
+  EventsOff('window:shown')
   if (refreshTimer) clearInterval(refreshTimer)
+  if (vipCopiedTimer) clearTimeout(vipCopiedTimer)
+  if (roomCopiedTimer) clearTimeout(roomCopiedTimer)
 })
 </script>
 
@@ -571,15 +667,25 @@ onUnmounted(() => {
     <header class="topbar">
       <div class="topbar-left">
         <!-- 房间内显示房间号（更有上下文价值），其他场景显示产品名 -->
-        <span class="brand">{{ data.joined ? data.room : 'NetBridge' }}</span>
-        <span class="status" :class="'status-' + statusColor(data.status)">
+        <span class="brand" :class="{ 'brand-clickable': data.joined, 'is-copied': roomCopied }"
+              :title="data.joined ? t('topbar.roomCopyTip') : ''"
+              :role="data.joined ? 'button' : undefined" :tabindex="data.joined ? 0 : undefined"
+              @click="copyRoom" @keydown.enter="copyRoom">
+          <template v-if="roomCopied">✓ {{ t('topbar.copied') }}</template>
+          <template v-else>{{ data.joined ? data.room : 'NetBridge' }}</template>
+        </span>
+        <span class="status" :class="'status-' + statusColor(data.status)" :title="statusTitle">
           <span class="status-dot"></span>
           <span class="status-text">{{ t('status.' + statusKey(data.status)) }}</span>
         </span>
-        <span v-if="data.self.vip" class="badge badge-mono" :title="t('topbar.vipTip')">{{ data.self.vip }}</span>
-        <span v-if="data.tunActive" class="badge badge-info" :title="t('topbar.tunTip')">TUN</span>
-        <span v-if="data.self.isIPv6" class="badge badge-primary" :title="t('topbar.ipv6Tip')">IPv6</span>
-        <span v-else-if="data.self.v4" class="badge badge-ghost" :title="t('topbar.ipv4Tip')">IPv4</span>
+        <!-- VIP：点击复制，成功后短暂显示「✓ 已复制」。协议栈信息折进上方状态的 hover title -->
+        <span v-if="data.self.vip" class="badge badge-mono badge-clickable"
+              :class="{ 'is-copied': vipCopied }"
+              :title="t('topbar.vipTip')" role="button" tabindex="0"
+              @click="copyVIP" @keydown.enter="copyVIP">
+          <template v-if="vipCopied">✓ {{ t('topbar.copied') }}</template>
+          <template v-else>{{ data.self.vip }}</template>
+        </span>
       </div>
       <div class="topbar-right">
         <!-- 语言切换：文/A 翻译图标 + 下拉（仅连接前 / 进房前显示；语言已缓存，进房后无需再切） -->
@@ -606,12 +712,18 @@ onUnmounted(() => {
             <path d="M12 .5C5.37.5 0 5.78 0 12.29c0 5.2 3.44 9.61 8.21 11.16.6.11.82-.25.82-.56 0-.28-.01-1.02-.02-2-3.34.71-4.04-1.58-4.04-1.58-.55-1.36-1.34-1.72-1.34-1.72-1.09-.73.08-.72.08-.72 1.21.08 1.84 1.22 1.84 1.22 1.07 1.8 2.81 1.28 3.5.98.11-.76.42-1.28.76-1.57-2.67-.3-5.47-1.3-5.47-5.78 0-1.28.47-2.32 1.23-3.14-.12-.3-.53-1.5.12-3.13 0 0 1-.32 3.3 1.2a11.6 11.6 0 0 1 6 0c2.3-1.52 3.3-1.2 3.3-1.2.65 1.63.24 2.83.12 3.13.77.82 1.23 1.86 1.23 3.14 0 4.49-2.81 5.48-5.49 5.77.43.36.81 1.08.81 2.18 0 1.57-.01 2.84-.01 3.23 0 .31.21.68.83.56A12.04 12.04 0 0 0 24 12.29C24 5.78 18.63.5 12 .5z"/>
           </svg>
         </button>
-        <button v-if="data.joined" @click="doLeaveRoom" class="btn btn-ghost btn-sm">{{ t('topbar.leaveRoom') }}</button>
         <button v-if="data.connected" @click="doDisconnect" class="btn btn-ghost btn-sm btn-danger-ghost">{{ t('topbar.disconnect') }}</button>
       </div>
     </header>
 
     <!-- 日志面板：可折叠的辅助信息区（顶栏日志按钮已隐藏，Ctrl+Shift+L 切换） -->
+    <!-- v2：剪贴板检测到邀请时的一键加入浮条 -->
+    <div v-if="data.clipInvite" class="invite-toast">
+      <span class="invite-toast-txt">{{ t('invite.detected', {room: data.clipInvite.room, server: data.clipInvite.server}) }}</span>
+      <button @click="joinFromClipboard" class="btn btn-primary btn-sm">{{ t('invite.join') }}</button>
+      <button @click="dismissClipInvite" class="btn btn-ghost btn-sm">{{ t('invite.ignore') }}</button>
+    </div>
+
     <div v-if="showLog" class="log-panel">
       <button class="log-close" @click="showLog = false" :title="t('log.close')" aria-label="×">×</button>
       <div class="log-panel-body" ref="logEl">
@@ -620,40 +732,50 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 连接服务器页 -->
-    <div v-if="!data.connected" class="centered">
+    <!-- 合并加入表单：服务器 + 房间/邀请 + 昵称（未进房时显示，连接/加入一步完成） -->
+    <div v-if="!data.joined" class="centered">
       <section class="card auth-card">
-        <h2 class="card-title">{{ t('connect.title') }}</h2>
-        <input v-model="data.serverAddr"
-               @keyup.enter="doConnect"
+        <!-- 服务器：输入 + 一次性测试连通性 -->
+        <div class="field-label">{{ t('join.serverLabel') }}</div>
+        <div class="row">
+          <input v-model="data.serverAddr"
+                 @keyup.enter="doJoin"
+                 :disabled="data.connecting"
+                 :placeholder="t('connect.placeholder')"
+                 class="input"/>
+          <button @click="doTestServer" :disabled="data.testing || data.connecting" class="btn btn-ghost test-btn">
+            {{ t('join.test') }}
+          </button>
+        </div>
+        <p class="test-result" :class="{ 'is-ok': data.testOk }">{{ data.testResult }}</p>
+
+        <!-- 房间：房间号 / 粘贴邀请（满宽，与昵称框等宽） -->
+        <div class="field-label">{{ t('join.roomLabel') }}</div>
+        <input v-model="data.room"
+               @input="onRoomInput"
+               @keyup.enter="doJoin"
                :disabled="data.connecting"
-               :placeholder="t('connect.placeholder')"
+               :placeholder="t('join.roomOrInvitePlaceholder')"
                class="input"/>
-        <button @click="doConnect"
+        <p v-if="data.inviteParsed" class="invite-hint">✓ {{ t('invite.parsed', {room: data.inviteParsed.room, server: data.inviteParsed.server}) }}</p>
+
+        <div class="field-label">{{ t('join.nameLabel') }}</div>
+        <input v-model="data.nickName"
+               @keyup.enter="doJoin"
+               :disabled="data.connecting"
+               :placeholder="t('join.namePlaceholder')"
+               class="input"/>
+
+        <button @click="doJoin"
                 :disabled="data.connecting"
                 class="btn btn-primary btn-block">
-          {{ data.connecting ? t('connect.connecting') : t('connect.button') }}
+          {{ data.connecting ? t('connect.connecting') : t('join.button') }}
         </button>
+        <label class="voice-check">
+          <input type="checkbox" :checked="data.voiceEnabled" @change="toggleVoiceEnabled"/>
+          <span>{{ t('voice.enableLabel') }}</span>
+        </label>
         <p v-if="data.connectError" class="auth-error">{{ t('connect.failed') }}{{ data.connectError }}</p>
-      </section>
-    </div>
-
-    <!-- 加入房间页 -->
-    <div v-else-if="!data.joined" class="centered">
-      <section class="card auth-card">
-        <h2 class="card-title">{{ t('join.title') }}</h2>
-        <input v-model="data.room" @keyup.enter="doJoinRoom" :placeholder="t('join.roomPlaceholder')" class="input"/>
-        <input v-model="data.nickName" @keyup.enter="doJoinRoom" :placeholder="t('join.namePlaceholder')" class="input"/>
-        <button @click="toggleVoiceEnabled" class="voice-toggle" :class="{ 'is-off': !data.voiceEnabled }" :title="data.voiceEnabled ? t('voice.enabledTip') : t('voice.disabledTip')">
-          <svg class="vt-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M11 5 L6 9 H3 V15 H6 L11 19 Z"/>
-            <path d="M15.5 8.5 a5 5 0 0 1 0 7"/>
-            <path d="M18 6 a9 9 0 0 1 0 12"/>
-            <line v-if="!data.voiceEnabled" x1="4" y1="4" x2="20" y2="20"/>
-          </svg>
-          <span class="vt-txt">{{ data.voiceEnabled ? t('voice.on') : t('voice.off') }}</span>
-        </button>
-        <button @click="doJoinRoom" class="btn btn-primary btn-block">{{ t('join.button') }}</button>
       </section>
     </div>
 
@@ -868,19 +990,60 @@ onUnmounted(() => {
   color: var(--color-success);
   border: 1px solid var(--color-border-strong);
 }
-.badge-info {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
-  border: 1px solid transparent;
+/* VIP 徽标可点击复制：hover 提示可交互 */
+.badge-clickable {
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
 }
-.badge-primary {
-  background: var(--color-accent);
+.badge-clickable:hover {
+  color: var(--color-text);
+  border-color: var(--color-text-muted);
+}
+/* 复制成功态：实心绿底白字，明确反馈 */
+.badge-clickable.is-copied {
+  background: var(--color-success);
   color: #fff;
+  border-color: var(--color-success);
 }
-.badge-ghost {
-  background: transparent;
-  color: var(--color-text-muted);
-  border: 1px solid var(--color-border-strong);
+
+/* 房间名可点击复制邀请链接（joined 时），与 VIP 徽标复制态同款绿色反馈 */
+.brand-clickable {
+  cursor: pointer;
+  transition: color .15s;
+}
+.brand-clickable:hover {
+  color: var(--color-accent);
+}
+.brand.is-copied {
+  color: var(--color-success);
+}
+
+/* 邀请解析提示条：房间框粘贴 netbridge:// 邀请后展示 */
+.invite-hint {
+  margin: -2px 0 2px;
+  font-size: 12px;
+  color: var(--color-success);
+}
+
+/* v2 剪贴板邀请 toast：顶部横条 */
+.invite-toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px auto 0;
+  padding: 8px 12px;
+  max-width: 560px;
+  background: var(--color-success-soft);
+  border: 1px solid var(--color-success);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  color: var(--color-text);
+}
+.invite-toast-txt {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ===== 按钮 ===== */
@@ -890,6 +1053,7 @@ onUnmounted(() => {
   justify-content: center;
   height: 32px;
   padding: 0 14px;
+  box-sizing: border-box;
   font-size: 13px;
   font-weight: 500;
   /* 关键：固定 line-height，避免全局 body line-height:1.5 把固定高度按钮里的文字撑偏 */
@@ -917,6 +1081,11 @@ onUnmounted(() => {
 .btn-block {
   width: 100%;
   height: 36px;
+}
+/* 禁用态统一置灰：测试中/连接中按钮文案不变，靠此传达"忙"状态 */
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Primary：纯色紫蓝 */
@@ -963,7 +1132,7 @@ onUnmounted(() => {
   padding: 20px;
 }
 .card-title {
-  margin: 0 0 16px;
+  margin: 0 0 4px;
   font-size: 14px;
   font-weight: 600;
   color: var(--color-text);
@@ -1003,18 +1172,68 @@ onUnmounted(() => {
 .auth-card {
   width: 100%;
   max-width: 360px;
-}
-.auth-card .input + .input,
-.auth-card .input + .btn,
-.auth-card .btn + .input {
-  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 .auth-error {
-  margin: 12px 0 0;
+  margin: 0;
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-danger);
   word-break: break-word;
+}
+
+/* 合并表单：区块标签 + 服务器行内测试 + 语音/加入邀请各半 + 加入满宽 */
+.field-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  letter-spacing: 0.02em;
+}
+.row {
+  display: flex;
+  gap: 8px;
+}
+.row .input {
+  flex: 1;
+  min-width: 0;
+}
+/* 测试按钮：覆盖 .btn 默认 32px，与输入框等高 36px */
+.row .test-btn {
+  flex-shrink: 0;
+  height: 36px;
+  min-width: 80px;
+}
+.test-result {
+  min-height: 18px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-danger);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.test-result.is-ok {
+  color: var(--color-success);
+}
+/* 语音复选框（加入按钮下方） */
+.voice-check {
+  display: flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.voice-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-accent);
+  cursor: pointer;
 }
 
 /* ===== 房间布局 ===== */
