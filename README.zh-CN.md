@@ -59,6 +59,13 @@ go run .                                  # 默认监听 [::]:10555（双栈）
 go build -o netbridge-server . && ./netbridge-server   # 或构建后运行
 ```
 
+交叉编译 Linux 版（在 `server/` 目录执行）：
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o netbridge-server .   # x86_64
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o netbridge-server .   # aarch64
+```
+
 可选参数 / 环境变量：
 
 | 参数 | 环境变量 | 默认值 | 说明 |

@@ -8,6 +8,8 @@ export namespace main {
 	    v4?: string;
 	    v6?: string;
 	    channel: string;
+	    voiceOn?: boolean;
+	    micOn?: boolean;
 	    isIPv6: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -23,6 +25,8 @@ export namespace main {
 	        this.v4 = source["v4"];
 	        this.v6 = source["v6"];
 	        this.channel = source["channel"];
+	        this.voiceOn = source["voiceOn"];
+	        this.micOn = source["micOn"];
 	        this.isIPv6 = source["isIPv6"];
 	    }
 	}

@@ -58,6 +58,8 @@ func (h *RoomHandler) Handle(ctx context.Context, remote *net.UDPAddr, raw []byt
 		return h.relay.HandleCompactFrame(remote, raw)
 	case protocol.TypeChat:
 		return h.handleChat(raw)
+	case protocol.TypePeerStatus:
+		return h.handlePeerStatus(raw)
 	case protocol.TypePeerLeave:
 		return h.handlePeerLeave(raw)
 	default:
@@ -137,6 +139,8 @@ func (h *RoomHandler) handleJoinRoom(remote *net.UDPAddr, raw []byte) error {
 			PublicAddress: protocol.PreferredAddr(v4, v6),
 			PublicV4:      v4,
 			PublicV6:      v6,
+			VoiceOn:       rp.VoiceOn,
+			MicOn:         rp.MicOn,
 		})
 		if rp.ID == peerID {
 			localIndex = i
@@ -172,6 +176,8 @@ func (h *RoomHandler) handleJoinRoom(remote *net.UDPAddr, raw []byte) error {
 			PublicAddress: protocol.PreferredAddr(v4New, v6New),
 			PublicV4:      v4New,
 			PublicV6:      v6New,
+			VoiceOn:       p.VoiceOn,
+			MicOn:         p.MicOn,
 		},
 	}
 	for _, rp := range peers {
@@ -209,6 +215,44 @@ func (h *RoomHandler) handleChat(raw []byte) error {
 	for _, p := range rm.PeerList() {
 		if err := h.srv.Send(p.Addr, data); err != nil {
 			h.log.Warn("广播 Chat 失败", "target", p.ID, "err", err)
+		}
+	}
+	return nil
+}
+
+// handlePeerStatus 处理 peer 语音状态变更：更新该 peer 的状态后广播给房间其他成员，
+// 供其信息卡展示"是否开语音 / 是否开麦"。不含发送者自己（其本地状态已是权威）。
+func (h *RoomHandler) handlePeerStatus(raw []byte) error {
+	var pkt protocol.PeerStatusPacket
+	if err := protocol.Decode(raw, &pkt); err != nil {
+		return err
+	}
+	if pkt.Room == "" || pkt.PeerID == "" {
+		return nil
+	}
+
+	rm := h.mgr.Get(pkt.Room)
+	if rm == nil {
+		return nil
+	}
+	p := rm.GetPeer(pkt.PeerID)
+	if p == nil {
+		h.log.Debug("PeerStatus 来源 peer 不存在", "room", pkt.Room, "peer", pkt.PeerID)
+		return nil
+	}
+	p.SetVoiceStatus(pkt.VoiceOn, pkt.MicOn)
+
+	// 原样广播给房间其他成员（不含发送者自己）。
+	data, err := protocol.Encode(pkt)
+	if err != nil {
+		return err
+	}
+	for _, rp := range rm.PeerList() {
+		if rp.ID == pkt.PeerID {
+			continue
+		}
+		if err := h.srv.Send(rp.Addr, data); err != nil {
+			h.log.Warn("广播 PeerStatus 失败", "target", rp.ID, "err", err)
 		}
 	}
 	return nil

@@ -12,10 +12,23 @@ type Peer struct {
 	ID        string       // 客户端生成的唯一 ID（uuid）
 	NickName  string       // 玩家昵称
 	Addr      *net.UDPAddr // 公网端点（含 NAT 映射端口，用于打洞与回包）
-	VirtualIP uint32       // 分配的虚拟 IP 主机号（如 2 → 10.66.0.2）
+	VirtualIP uint32       // 分配的虚拟 IP 主机号（如 2 -> 10.66.0.2）
+
+	// 语音状态：由客户端通过 PeerStatusPacket 上报，广播给房间其他成员的信息卡展示。
+	// 写入频率低（仅在切麦时），沿用 mu 保护。
+	VoiceOn bool
+	MicOn   bool
 
 	mu       sync.RWMutex
 	lastSeen time.Time
+}
+
+// SetVoiceStatus 更新该 peer 的语音状态（开语音 / 开麦），由 PeerStatusPacket 触发。
+func (p *Peer) SetVoiceStatus(voiceOn, micOn bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.VoiceOn = voiceOn
+	p.MicOn = micOn
 }
 
 // New 创建 Peer 实例，初始化心跳时间为当前时间。

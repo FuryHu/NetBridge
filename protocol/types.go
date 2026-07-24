@@ -12,6 +12,8 @@ type PeerInfo struct {
 	PublicAddress string `json:"pub_addr,omitempty"` // 主路径公网端点（v4 或 v6）
 	PublicV4      string `json:"v4,omitempty"`       // 公网 IPv4 端点（若可知）
 	PublicV6      string `json:"v6,omitempty"`       // 公网 IPv6 端点（若可知）
+	VoiceOn       bool   `json:"voiceOn,omitempty"`  // 是否开启语音功能
+	MicOn         bool   `json:"micOn,omitempty"`     // 是否开麦（采集）
 }
 
 // JoinRoomPacket 加入房间请求（C -> S）。
@@ -89,4 +91,14 @@ type ChatPacket struct {
 	NickName  string `json:"name"` // 发送者昵称
 	Message   string `json:"msg"`  // 消息内容
 	Timestamp int64  `json:"ts"`   // 发送时间（毫秒）
+}
+
+// PeerStatusPacket peer 语音状态变更（C <-> S <-> C）。
+// 客户端在 voiceEnabled / micOn 变化时发给服务端，服务端更新该 peer 的状态后
+// 广播给房间其他成员，供其信息卡展示"是否开语音 / 是否开麦"。
+// 仅状态变化时发送，不随每帧语音。PeerID 标识状态归属者（发送时填自己）。
+type PeerStatusPacket struct {
+	Packet
+	VoiceOn bool `json:"voiceOn,omitempty"` // 是否开启语音功能
+	MicOn   bool `json:"micOn,omitempty"`   // 是否开麦（采集）
 }

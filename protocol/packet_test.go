@@ -46,6 +46,15 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 			},
 			out: &RelayDataPacket{},
 		},
+		{
+			name: "peer_status",
+			in: PeerStatusPacket{
+				Packet:  Packet{Type: TypePeerStatus, Room: "game666", PeerID: "peer-A"},
+				VoiceOn: true,
+				MicOn:   true,
+			},
+			out: &PeerStatusPacket{},
+		},
 	}
 
 	for _, c := range cases {
@@ -113,6 +122,41 @@ func TestRelayDataPayloadIntact(t *testing.T) {
 	}
 	if !bytes.Equal(out.Payload, payload) {
 		t.Fatalf("Payload 往返不一致: got %v want %v", out.Payload, payload)
+	}
+}
+
+// TestPeerStatusRoundTrip 验证语音状态字段往返；bool 用 omitempty，需确认 true 存活、
+// 未携带字段（false）解码后仍为 false。
+func TestPeerStatusRoundTrip(t *testing.T) {
+	in := PeerStatusPacket{
+		Packet:  Packet{Type: TypePeerStatus, Room: "game666", PeerID: "peer-A"},
+		VoiceOn: true,
+		MicOn:   true,
+	}
+	data, err := Encode(in)
+	if err != nil {
+		t.Fatalf("Encode 失败: %v", err)
+	}
+	out := &PeerStatusPacket{}
+	if err := Decode(data, out); err != nil {
+		t.Fatalf("Decode 失败: %v", err)
+	}
+	if !out.VoiceOn || !out.MicOn {
+		t.Fatalf("状态字段往返丢失: voiceOn=%v micOn=%v", out.VoiceOn, out.MicOn)
+	}
+	if out.PeerID != "peer-A" {
+		t.Fatalf("PeerID 往返不一致: got %q", out.PeerID)
+	}
+
+	// 全 false：omitempty 会省略字段，解码后应保持 false。
+	off := PeerStatusPacket{Packet: Packet{Type: TypePeerStatus, PeerID: "peer-B"}}
+	data2, _ := Encode(off)
+	out2 := &PeerStatusPacket{}
+	if err := Decode(data2, out2); err != nil {
+		t.Fatalf("Decode 失败: %v", err)
+	}
+	if out2.VoiceOn || out2.MicOn {
+		t.Fatalf("未携带的状态字段应为 false: voiceOn=%v micOn=%v", out2.VoiceOn, out2.MicOn)
 	}
 }
 

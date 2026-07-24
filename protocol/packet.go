@@ -30,6 +30,10 @@ const (
 	// TypeChat 房间内聊天消息（C <-> S <-> C），服务端广播给所有人。
 	TypeChat PacketType = "chat"
 
+	// TypePeerStatus peer 语音状态变更（开语音 / 开麦），C <-> S <-> C，
+	// 服务端更新该 peer 状态后广播给房间其他成员。
+	TypePeerStatus PacketType = "peer_status"
+
 	// TypeCompactFrame 表示一条紧凑二进制数据帧（P2P / Relay）。
 	// 这个值不会出现在 JSON 报文里，仅供服务端 / 客户端 dispatch 内部分流使用。
 	TypeCompactFrame PacketType = "__frame__"

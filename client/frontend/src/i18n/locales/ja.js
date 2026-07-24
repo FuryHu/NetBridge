@@ -55,6 +55,16 @@ export default {
   'peer.channelPending': '接続中',
   'peer.candidateV6': '候補 IPv6: ',
   'peer.badgeRelay': '中継',
+  'peer.infoVIP': '仮想 IP',
+  'peer.infoChannel': '接続方式',
+  'peer.infoVoice': '音声',
+  'peer.infoMic': 'マイク',
+  'peer.infoOn': 'オン',
+  'peer.infoOff': 'オフ',
+  'peer.copy': 'コピー',
+  'peer.menuVolume': '音量',
+  'peer.menuMute': 'この人をミュート',
+  'peer.menuUnmute': 'ミュート解除',
 
   // チャット
   'chat.placeholder': 'メッセージを入力...',

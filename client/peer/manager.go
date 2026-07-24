@@ -49,6 +49,20 @@ func (m *Manager) Remove(peerID string) {
 	delete(m.peers, peerID)
 }
 
+// SetVoiceStatus 更新指定 peer 的语音状态（开语音 / 开麦），peer 不存在返回 false。
+// 由收到 PeerStatusPacket 时调用，仅改这两字段、不重建 PeerInfo。
+func (m *Manager) SetVoiceStatus(peerID string, voiceOn, micOn bool) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.peers[peerID]
+	if !ok {
+		return false
+	}
+	p.VoiceOn = voiceOn
+	p.MicOn = micOn
+	return true
+}
+
 // Get 按 ID 查找 peer。
 func (m *Manager) Get(peerID string) *protocol.PeerInfo {
 	m.mu.RLock()

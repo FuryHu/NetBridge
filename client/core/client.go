@@ -164,6 +164,24 @@ func (c *Client) SendChat(msg string) error {
 	return c.conn.SendPacket(c.serverAddr, pkt)
 }
 
+// SendPeerStatus 把本地语音状态（开语音 / 开麦）上报给服务端，由服务端广播给房间其他成员。
+// 仅在状态变化时调用，不随每帧语音。
+func (c *Client) SendPeerStatus(voiceOn, micOn bool) error {
+	if c.serverAddr == nil {
+		return fmt.Errorf("未连接服务器")
+	}
+	pkt := protocol.PeerStatusPacket{
+		Packet: protocol.Packet{
+			Type:   protocol.TypePeerStatus,
+			Room:   c.cfg.Room,
+			PeerID: c.cfg.PeerID,
+		},
+		VoiceOn: voiceOn,
+		MicOn:   micOn,
+	}
+	return c.conn.SendPacket(c.serverAddr, pkt)
+}
+
 // State 返回当前状态。
 func (c *Client) State() State {
 	c.stateMu.RLock()
@@ -560,6 +578,8 @@ func (c *Client) dispatch(remote *net.UDPAddr, data []byte) {
 		c.handleGameData(data)
 	case protocol.TypeChat:
 		c.handleChat(data)
+	case protocol.TypePeerStatus:
+		c.handlePeerStatus(data)
 	}
 }
 
@@ -705,6 +725,23 @@ func (c *Client) handleChat(raw []byte) {
 	}
 	if c.chatHandler != nil {
 		c.chatHandler(pkt.NickName, pkt.Message, pkt.Timestamp)
+	}
+}
+
+// handlePeerStatus 收到他人语音状态变更：更新本地缓存的该 peer 状态并通知前端刷新信息卡。
+func (c *Client) handlePeerStatus(raw []byte) {
+	var pkt protocol.PeerStatusPacket
+	if err := protocol.Decode(raw, &pkt); err != nil {
+		return
+	}
+	if pkt.PeerID == "" || pkt.PeerID == c.cfg.PeerID {
+		return // 自己的状态以前端本地为准，忽略回环
+	}
+	if c.peerMgr.SetVoiceStatus(pkt.PeerID, pkt.VoiceOn, pkt.MicOn) {
+		c.log.Debug("peer 状态更新", "peer", pkt.PeerID, "voiceOn", pkt.VoiceOn, "micOn", pkt.MicOn)
+		if c.onPeerUpdate != nil {
+			c.onPeerUpdate(c.peerMgr.List())
+		}
 	}
 }
 

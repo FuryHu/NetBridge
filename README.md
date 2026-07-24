@@ -59,6 +59,13 @@ go run .                                  # default: listen on [::]:10555 (dual-
 go build -o netbridge-server . && ./netbridge-server   # or build & run
 ```
 
+Cross-compile for Linux (run from `server/`):
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o netbridge-server .   # x86_64
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o netbridge-server .   # aarch64
+```
+
 Optional flags / env:
 
 | Flag | Env | Default | Description |

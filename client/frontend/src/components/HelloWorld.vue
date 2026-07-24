@@ -1,6 +1,6 @@
 <script setup>
 import {reactive, onMounted, onUnmounted, nextTick, ref, computed, watch} from 'vue'
-import {Connect, Disconnect, JoinRoom, LeaveRoom, GetPeers, GetSelf, GetStatus, SendChat, OpenURL, SetTrayMenuState} from '../../wailsjs/go/main/App'
+import {Connect, Disconnect, JoinRoom, LeaveRoom, GetPeers, GetSelf, GetStatus, SendChat, OpenURL, SetTrayMenuState, SetVoiceStatus} from '../../wailsjs/go/main/App'
 import {EventsOn, EventsOff, WindowHide} from '../../wailsjs/runtime/runtime'
 import {startVoice} from '../voice'
 import {locale, t, setLocale, LANGS} from '../i18n'
@@ -44,6 +44,7 @@ const data = reactive({
   peerVols: {},
   peerMutes: {},
   activePeerVIP: null,
+  peerMenu: null,
 })
 const showLog = ref(false)
 const chatMsg = ref('')
@@ -85,6 +86,13 @@ function openGitHub() {
 watch(() => data.joined, () => { showLang.value = false })
 
 const others = computed(() => data.allPeers)
+
+// 信息卡 / 右键菜单的目标 peer：按 activePeerVIP / peerMenu.key 反查，peer 离开列表即自动消失。
+const activePeer = computed(() => data.allPeers.find(p => peerKey(p) === data.activePeerVIP) || null)
+const menuPeer = computed(() => {
+  const k = data.peerMenu && data.peerMenu.key
+  return k ? (data.allPeers.find(p => peerKey(p) === k) || null) : null
+})
 
 // 兼容服务端返回的两种 IPv6 标识：通道是否走 v6 / peer 是否暴露 v6 端点。
 const isPeerV6 = (p) => !!(p.isIPv6 || p.IsIPv6)
@@ -304,6 +312,7 @@ function toggleVoiceEnabled() {
     autoStartVoice()
   }
   addLog(data.voiceEnabled ? '语音已启用' : '语音已关闭')
+  reportVoiceStatus()
 }
 
 // 对方音量：每个 peer 独立的本地播放增益（0~1，默认 1）+ 静音开关（记原值）
@@ -323,25 +332,50 @@ function togglePeerMute(p) {
   data.peerMutes[peerKey(p)] = !data.peerMutes[peerKey(p)]
   applyPeerVol(p)
 }
-function togglePeerPopover(p, e) {
+// reportVoiceStatus 上报本地语音状态（开语音 / 开麦），供其他成员信息卡展示。仅在进房后有意义。
+function reportVoiceStatus() {
+  if (data.joined) SetVoiceStatus(data.voiceEnabled, data.micOn).catch(() => {})
+}
+function channelLabel(p) {
+  return p.channel === 'p2p' ? t('peer.channelP2P') : p.channel === 'relay' ? t('peer.channelRelay') : t('peer.channelPending')
+}
+async function copyText(text) {
+  if (!text) return
+  try { await navigator.clipboard.writeText(text) } catch (e) {}
+}
+// 信息卡（左键）：只读展示对方连接信息 + 一键复制 IP/端点。再点同一项即收起。
+function openPeerInfo(p, e) {
+  data.peerMenu = null
   const k = peerKey(p)
   if (data.activePeerVIP === k) { data.activePeerVIP = null; return }
   data.activePeerVIP = k
-  // fixed 定位：用点击的 li 坐标算位置，不受父容器 overflow 裁剪
+  // fixed 定位：用点击的 li 坐标算位置，不受父容器 overflow 裁剪；近顶则向上展开。
   const r = e.currentTarget.getBoundingClientRect()
-  const above = r.top > 60
-  data.activePeerRect = { left: r.left, width: r.width, top: above ? r.top - 6 : r.bottom + 6, above }
+  const above = r.top > 240
+  data.activePeerRect = { left: r.left, top: above ? r.top - 6 : r.bottom + 6, above }
 }
-function peerPopoverStyle(p) {
-  if (!isPeerPopover(p) || !data.activePeerRect) return { display: 'none' }
+function peerInfoStyle() {
+  if (!data.activePeerRect) return { display: 'none' }
   const r = data.activePeerRect
   return {
     position: 'fixed',
     left: r.left + 'px',
     top: r.top + 'px',
-    width: r.width + 'px',
     transform: r.above ? 'translateY(-100%)' : 'none',
   }
+}
+// 右键菜单：音量 + 静音。数据驱动 items，便于以后扩展（私聊等）。
+function openPeerMenu(p, e) {
+  data.activePeerVIP = null
+  data.peerMenu = { key: peerKey(p), x: e.clientX, y: e.clientY }
+}
+function peerMenuStyle() {
+  if (!data.peerMenu) return { display: 'none' }
+  return { position: 'fixed', left: data.peerMenu.x + 'px', top: data.peerMenu.y + 'px' }
+}
+function closePeerFloats() {
+  data.activePeerVIP = null
+  data.peerMenu = null
 }
 
 // toggleMic 切换麦克风：首次点击启动语音通路（必须在用户手势内调 getUserMedia），
@@ -373,6 +407,7 @@ async function toggleMic() {
     // 闭麦立即清空本地音量条与说话指示，避免残留电平/亮灯悬在半空
     if (!data.micOn) { data.micLevel = 0; data.selfSpeaking = false }
     addLog(data.micOn ? '麦克风已开' : '麦克风已静音')
+    reportVoiceStatus()
   } catch (e) {
     data.micOn = !data.micOn
     addLog('✗ 麦克风切换失败: ' + e)
@@ -390,12 +425,14 @@ function onKeydown(e) {
     e.preventDefault()
     showLog.value = !showLog.value
   }
-  // ESC：最小化到托盘。聚焦在输入框/文本域时不触发，避免误关正在输入的内容。
+  // ESC：有成员浮层（信息卡 / 右键菜单）时先关浮层；否则最小化到托盘。
+  // 聚焦在输入框/文本域时不触发，避免误关正在输入的内容。
   if (e.key === 'Escape') {
     const tag = (e.target && e.target.tagName) || ''
     if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
       e.preventDefault()
-      WindowHide()
+      if (data.activePeerVIP || data.peerMenu) closePeerFloats()
+      else WindowHide()
     }
   }
 }
@@ -499,6 +536,8 @@ onMounted(() => {
       isIPv6: !!self.isIPv6,
     }
     if (self.vip && data.joined && !data.voice) autoStartVoice()
+    // 此时服务端已注册本 peer，上报一次初始语音状态供其他成员信息卡展示。
+    reportVoiceStatus()
   })
   EventsOn('chat:message', (c) => { addChat(c.nickName, c.message, c.timestamp) })
   EventsOn('log:message', (msg) => { addLog(msg) })
@@ -640,7 +679,8 @@ onUnmounted(() => {
               class="member"
               :class="{ 'member-speaking': isSpeaking(p), 'member-active': isPeerPopover(p) }"
               :title="peerTitle(p)"
-              @click="togglePeerPopover(p, $event)">
+              @click="openPeerInfo(p, $event)"
+              @contextmenu.prevent="openPeerMenu(p, $event)">
             <span class="member-dot"
                   :class="p.channel === 'p2p' ? 'dot-p2p' : p.channel === 'relay' ? 'dot-relay' : 'dot-pending'"></span>
             <span class="member-name">{{ p.nickName }}</span>
@@ -649,14 +689,51 @@ onUnmounted(() => {
             <span v-if="p.channel === 'p2p'" class="member-channel ch-p2p">P2P</span>
             <span v-else-if="p.channel === 'relay'" class="member-channel ch-relay">{{ t('peer.badgeRelay') }}</span>
             <span v-else class="member-channel ch-pending">…</span>
-            <div class="peer-popover" v-show="isPeerPopover(p)" :style="peerPopoverStyle(p)" @click.stop>
-              <input type="range" min="0" max="100" :value="peerVolPct(p)" @input="onPeerVolInput(p, $event)" class="peer-slider"/>
-              <button @click="togglePeerMute(p)" class="peer-mute-btn" :class="{ 'is-on': isPeerMuted(p) }" :title="t('voice.muteToggleTip')">
-                <MicIcon :muted="isPeerMuted(p)" class="peer-mute-ico"/>
-              </button>
-            </div>
           </li>
         </ul>
+        <!-- 成员浮层：信息卡(左键) + 右键菜单，同时只显示一个；点遮罩 / ESC 关闭 -->
+        <div class="peer-backdrop" v-if="activePeer || menuPeer" @click="closePeerFloats" @contextmenu.prevent="closePeerFloats"></div>
+        <div class="peer-info" v-if="activePeer" :style="peerInfoStyle()" @click.stop>
+          <div class="info-head">
+            <span class="info-name">{{ activePeer.nickName }}</span>
+            <button class="info-close" @click="closePeerFloats" :title="t('log.close')" aria-label="×">×</button>
+          </div>
+          <div class="info-row">
+            <span class="info-k">{{ t('peer.infoVIP') }}</span>
+            <span class="info-v">{{ activePeer.vip }} <button class="copy-btn" @click="copyText(activePeer.vip)" :title="t('peer.copy')">{{ t('peer.copy') }}</button></span>
+          </div>
+          <div class="info-row">
+            <span class="info-k">{{ t('peer.infoChannel') }}</span>
+            <span class="info-v">{{ channelLabel(activePeer) }}</span>
+          </div>
+          <div class="info-row" v-if="activePeer.v4">
+            <span class="info-k">IPv4</span>
+            <span class="info-v info-mono">{{ activePeer.v4 }} <button class="copy-btn" @click="copyText(activePeer.v4)" :title="t('peer.copy')">{{ t('peer.copy') }}</button></span>
+          </div>
+          <div class="info-row" v-if="activePeer.v6">
+            <span class="info-k">IPv6</span>
+            <span class="info-v info-mono">{{ activePeer.v6 }} <button class="copy-btn" @click="copyText(activePeer.v6)" :title="t('peer.copy')">{{ t('peer.copy') }}</button></span>
+          </div>
+          <div class="info-row">
+            <span class="info-k">{{ t('peer.infoVoice') }}</span>
+            <span class="info-v" :class="activePeer.voiceOn ? 'st-on' : 'st-off'">{{ activePeer.voiceOn ? t('peer.infoOn') : t('peer.infoOff') }}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-k">{{ t('peer.infoMic') }}</span>
+            <span class="info-v" :class="activePeer.micOn ? 'st-on' : 'st-off'">{{ activePeer.micOn ? t('peer.infoOn') : t('peer.infoOff') }}</span>
+          </div>
+        </div>
+        <!-- 右键菜单：音量 + 静音（数据驱动，便于以后扩展） -->
+        <div class="peer-menu" v-if="menuPeer" :style="peerMenuStyle()" @click.stop>
+          <div class="menu-item menu-volume">
+            <span class="menu-label">{{ t('peer.menuVolume') }}</span>
+            <input type="range" min="0" max="100" :value="peerVolPct(menuPeer)" @input="onPeerVolInput(menuPeer, $event)" class="peer-slider"/>
+          </div>
+          <button class="menu-item menu-mute-btn" :class="{ 'is-on': isPeerMuted(menuPeer) }" @click="togglePeerMute(menuPeer)">
+            <MicIcon :muted="isPeerMuted(menuPeer)" class="peer-mute-ico"/>
+            <span>{{ isPeerMuted(menuPeer) ? t('peer.menuUnmute') : t('peer.menuMute') }}</span>
+          </button>
+        </div>
         <div class="voice-bar" v-if="data.joined"
              @mouseenter="data.showMicPopover = data.voiceEnabled"
              @mouseleave="data.showMicPopover = false"
@@ -1198,18 +1275,98 @@ onUnmounted(() => {
   color: var(--color-text-disabled);
   flex-shrink: 0;
 }
-/* 成员音量浮窗：点击成员项显示，调本地播放增益 + 静音 */
-.peer-popover {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+/* 成员浮层：左键信息卡 + 右键菜单；遮罩层负责点外面 / 右键关闭 */
+.peer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+.peer-info {
+  position: fixed;
+  width: 260px;
+  padding: 8px 10px;
   background: var(--color-bg-elevated);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
-  z-index: 30;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  z-index: 50;
+  font-size: 13px;
 }
+.info-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--color-border);
+}
+.info-name { font-weight: 600; }
+.info-close {
+  width: 20px; height: 20px; padding: 0;
+  border: none; background: transparent;
+  color: var(--color-text-muted); cursor: pointer;
+  font-size: 16px; line-height: 1;
+}
+.info-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+}
+.info-k {
+  color: var(--color-text-muted);
+  flex: 0 0 64px;
+}
+.info-v {
+  flex: 1;
+  word-break: break-all;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.info-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.copy-btn {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.copy-btn:hover { color: var(--color-text); border-color: var(--color-text-muted); }
+.st-on { color: var(--color-success); }
+.st-off { color: var(--color-text-disabled); }
+.peer-menu {
+  position: fixed;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  z-index: 50;
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+.menu-volume .peer-slider { flex: 1; accent-color: var(--color-success); cursor: pointer; }
+.menu-label { color: var(--color-text-muted); flex: 0 0 36px; }
+.menu-mute-btn {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+}
+.menu-mute-btn:hover { background: var(--color-hover-overlay); }
+.menu-mute-btn.is-on { color: var(--color-danger); }
 .peer-slider {
   flex: 1;
   accent-color: var(--color-success);

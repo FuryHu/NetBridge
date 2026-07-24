@@ -55,6 +55,16 @@ export default {
   'peer.channelPending': 'Connecting',
   'peer.candidateV6': 'Candidate IPv6: ',
   'peer.badgeRelay': 'Relay',
+  'peer.infoVIP': 'Virtual IP',
+  'peer.infoChannel': 'Connection',
+  'peer.infoVoice': 'Voice',
+  'peer.infoMic': 'Microphone',
+  'peer.infoOn': 'On',
+  'peer.infoOff': 'Off',
+  'peer.copy': 'Copy',
+  'peer.menuVolume': 'Volume',
+  'peer.menuMute': 'Mute for me',
+  'peer.menuUnmute': 'Unmute',
 
   // Chat
   'chat.placeholder': 'Type a message...',

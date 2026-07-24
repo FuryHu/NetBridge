@@ -57,3 +57,7 @@ export function SendVoiceToAll(arg1) {
 export function SetTrayMenuState(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SetTrayMenuState'](arg1, arg2, arg3, arg4);
 }
+
+export function SetVoiceStatus(arg1, arg2) {
+  return window['go']['main']['App']['SetVoiceStatus'](arg1, arg2);
+}

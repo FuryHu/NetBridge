@@ -245,6 +245,15 @@ func (a *App) SendChat(msg string) error {
 	return a.client.SendChat(msg)
 }
 
+// SetVoiceStatus 上报本地语音状态（开语音 / 开麦），由后端转发给房间其他成员。
+// 前端在 voiceEnabled / micOn 变化及进房后各调用一次。
+func (a *App) SetVoiceStatus(voiceOn, micOn bool) error {
+	if a.client == nil {
+		return fmt.Errorf("客户端未初始化")
+	}
+	return a.client.SendPeerStatus(voiceOn, micOn)
+}
+
 // SendVoiceToAll 向房间内所有其他 peer 广播一帧语音。
 // payload 为 voice 子格式字节（codec/seq/ts/audio，见 protocol/voice.go）。
 // 前端每帧调用一次，由后端遍历 peer 分发，避免高频 IPC。
@@ -398,6 +407,8 @@ type PeerView struct {
 	V4         string `json:"v4,omitempty"`
 	V6         string `json:"v6,omitempty"`
 	Channel    string `json:"channel"` // p2p / relay / none
+	VoiceOn    bool   `json:"voiceOn,omitempty"` // 是否开启语音（对方上报）
+	MicOn      bool   `json:"micOn,omitempty"`   // 是否开麦（对方上报）
 	IsIPv6     bool   `json:"isIPv6"`  // P2P 通道是否走 IPv6（self 则看 PublicAddress 是否 v6）
 }
 
@@ -439,6 +450,8 @@ func (a *App) peersToViews(peers []protocol.PeerInfo) []PeerView {
 			V4:         p.PublicV4,
 			V6:         p.PublicV6,
 			Channel:    ch,
+			VoiceOn:    p.VoiceOn,
+			MicOn:      p.MicOn,
 			IsIPv6:     isV6,
 		})
 	}

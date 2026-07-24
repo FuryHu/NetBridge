@@ -59,6 +59,13 @@ go run .                                  # デフォルト: [::]:10555 で待�
 go build -o netbridge-server . && ./netbridge-server   # またはビルドして実行
 ```
 
+Linux 版のクロスコンパイル（`server/` ディレクトリで実行）：
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o netbridge-server .   # x86_64
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o netbridge-server .   # aarch64
+```
+
 任意のフラグ / 環境変数：
 
 | Flag | Env | デフォルト | 説明 |

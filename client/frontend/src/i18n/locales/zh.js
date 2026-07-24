@@ -55,6 +55,16 @@ export default {
   'peer.channelPending': '连接中',
   'peer.candidateV6': '候选 IPv6: ',
   'peer.badgeRelay': '中转',
+  'peer.infoVIP': '虚拟 IP',
+  'peer.infoChannel': '连接方式',
+  'peer.infoVoice': '语音',
+  'peer.infoMic': '麦克风',
+  'peer.infoOn': '已开启',
+  'peer.infoOff': '已关闭',
+  'peer.copy': '复制',
+  'peer.menuVolume': '音量',
+  'peer.menuMute': '静音此人',
+  'peer.menuUnmute': '取消静音',
 
   // 聊天
   'chat.placeholder': '输入消息...',
