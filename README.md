@@ -90,6 +90,10 @@ wails build    # produce a redistributable .exe / NSIS installer
 
 Usage: launch -> enter the server address (`vps-ip:10555`) -> join a room with a nickname -> share the room name. The virtual NIC comes up automatically once the server assigns you a VIP.
 
+**Click-to-copy shortcuts** (top bar, after joining):
+- Click the **room name** to copy an invite link (`netbridge://join?s=...&r=...`) - send it to a friend; they paste it into the room field (or just copy it and switch to NetBridge - the clipboard invite is auto-detected and joined with one click).
+- Click your **VIP** to copy your virtual IP (e.g. `10.66.0.5`) - paste it straight into a game's "direct IP connect". Both briefly show a `✓ copied` badge.
+
 ## ⚙️ How It Works
 
 The server assigns a VIP and broadcasts everyone's public v4/v6 endpoints. Clients punch both paths in parallel - the first to connect becomes the P2P channel; if none connects within 3s, the server relays (routing by VIP, never inspecting payload). A TUN bridge moves raw IP packets between the virtual NIC and the P2P/relay channel.

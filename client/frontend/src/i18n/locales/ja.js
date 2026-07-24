@@ -14,7 +14,7 @@ export default {
   'join.roomLabel': 'ルーム',
   'join.roomOrInvitePlaceholder': 'ルームID / 招待リンクを貼り付け',
   'join.nameLabel': '名前',
-  'join.namePlaceholder': '空欄で自動生成',
+  'join.namePlaceholder': '名前を入力',
   'join.button': '参加',
   'join.test': 'テスト',
   'join.testOk': '成功 · {ms} ms',

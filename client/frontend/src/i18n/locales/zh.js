@@ -13,7 +13,7 @@ export default {
   'join.roomLabel': '房间',
   'join.roomOrInvitePlaceholder': '房间号 / 粘贴邀请链接',
   'join.nameLabel': '昵称',
-  'join.namePlaceholder': '留空自动生成',
+  'join.namePlaceholder': '输入您的昵称',
   'join.button': '加入',
   'join.test': '测试',
   'join.testOk': '测试成功 · {ms} 毫秒',

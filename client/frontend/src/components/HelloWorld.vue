@@ -59,6 +59,7 @@ const showLog = ref(false)
 const chatMsg = ref('')
 const chatEl = ref(null)
 const logEl = ref(null)
+const nameEl = ref(null)
 let autoTried = false
 let refreshTimer = null
 let peerLevelTimers = {}
@@ -439,7 +440,15 @@ async function joinFromClipboard() {
   data.serverAddr = inv.server
   data.room = inv.room
   data.inviteParsed = inv
-  await doJoin()
+  // 名字已填 -> 直接进房（极致便捷，回访用户 nickName 存于 localStorage）；
+  // 名字为空 -> 只填表单并聚焦名字框，待用户输入后回车或点"加入"进房。
+  // 避免点 toast 时未输名字就用随机 PlayerXXX 进房。
+  if (data.nickName.trim()) {
+    await doJoin()
+  } else {
+    await nextTick()
+    nameEl.value?.focus()
+  }
 }
 // 信息卡（左键）：只读展示对方连接信息 + 一键复制 IP/端点。再点同一项即收起。
 function openPeerInfo(p, e) {
@@ -652,6 +661,9 @@ onMounted(() => {
   syncTray()
   // F2 快捷开关麦克风
   window.addEventListener('keydown', onKeydown)
+  // 窗口重获焦点（Alt-Tab / 点击切回，非托盘恢复）也触发剪贴板自检：
+  // window:shown 只在托盘恢复时推，覆盖不到"窗口一直可见、仅失焦再聚焦"的场景。
+  window.addEventListener('focus', checkClipboardInvite)
   // 尝试自动连接
   setTimeout(autoConnect, 500)
   // 自动连接结算后，若仍未进房，检查剪贴板是否含邀请（v2）
@@ -660,6 +672,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (data.voice) { data.voice.stop(); data.voice = null }
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('focus', checkClipboardInvite)
   EventsOff('status:change')
   EventsOff('peer:update')
   EventsOff('self:update')
@@ -774,6 +787,7 @@ onUnmounted(() => {
 
         <div class="field-label">{{ t('join.nameLabel') }}</div>
         <input v-model="data.nickName"
+               ref="nameEl"
                @keyup.enter="doJoin"
                :disabled="data.connecting"
                :placeholder="t('join.namePlaceholder')"

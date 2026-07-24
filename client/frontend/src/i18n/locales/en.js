@@ -14,7 +14,7 @@ export default {
   'join.roomLabel': 'Room',
   'join.roomOrInvitePlaceholder': 'Room ID / paste invite link',
   'join.nameLabel': 'Name',
-  'join.namePlaceholder': 'auto if blank',
+  'join.namePlaceholder': 'Enter your name',
   'join.button': 'Join',
   'join.test': 'Test',
   'join.testOk': 'Success · {ms} ms',
