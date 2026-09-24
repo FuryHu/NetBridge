@@ -50,6 +50,10 @@ export function SendChat(arg1) {
   return window['go']['main']['App']['SendChat'](arg1);
 }
 
+export function SendVideoToAll(arg1) {
+  return window['go']['main']['App']['SendVideoToAll'](arg1);
+}
+
 export function SendVoiceToAll(arg1) {
   return window['go']['main']['App']['SendVoiceToAll'](arg1);
 }

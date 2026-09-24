@@ -40,6 +40,20 @@ export default {
   'voice.mutedForYou': 'Muted for you',
   'voice.speaking': 'Speaking',
 
+  // Screen share
+  'screen.share': 'Share',
+  'screen.sharing': 'Sharing',
+  'screen.shareTip': 'Share screen (only P2P peers can view)',
+  'screen.stopped': 'Screen share stopped',
+  'screen.started': 'Screen share started',
+  'screen.startFail': 'Screen share failed (WebView2 may lack WebCodecs)',
+  'screen.noP2P': 'No P2P peers connected, no viewers',
+  'screen.theater': 'Theater mode',
+  'screen.fullscreen': 'Fullscreen',
+  'screen.bitrate': 'Bitrate',
+  'screen.quality': 'Quality',
+  'screen.resolution': 'Resolution',
+
   // Top bar
   'topbar.log': 'Log',
   'topbar.disconnect': 'Disconnect',
@@ -78,6 +92,7 @@ export default {
   'peer.menuUnmute': 'Unmute',
 
   // Chat
+  'chat.title': 'Chat',
   'chat.placeholder': 'Type a message...',
   'chat.send': 'Send',
   'chat.empty': 'No messages',

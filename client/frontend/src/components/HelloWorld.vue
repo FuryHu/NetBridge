@@ -1,8 +1,9 @@
 <script setup>
 import {reactive, onMounted, onUnmounted, nextTick, ref, computed, watch} from 'vue'
 import {Connect, Disconnect, JoinRoom, LeaveRoom, GetPeers, GetSelf, GetStatus, SendChat, OpenURL, SetTrayMenuState, SetVoiceStatus, TestServer} from '../../wailsjs/go/main/App'
-import {EventsOn, EventsOff, WindowHide, ClipboardGetText} from '../../wailsjs/runtime/runtime'
+import {EventsOn, EventsOff, WindowHide, ClipboardGetText, WindowFullscreen, WindowUnfullscreen, WindowIsFullscreen} from '../../wailsjs/runtime/runtime'
 import {startVoice} from '../voice'
+import {startScreen} from '../screen'
 import {locale, t, setLocale, LANGS} from '../i18n'
 import MicIcon from './MicIcon.vue'
 
@@ -54,11 +55,25 @@ const data = reactive({
   peerMutes: {},
   activePeerVIP: null,
   peerMenu: null,
+  // 投屏：screen 会话对象；screenSharing 本端是否在投屏；screenActive 是否有远端画面可看。
+  screen: null,
+  screenSharing: false,
+  screenActive: false,
+  // 投屏时聊天降级为右侧浮层：chatOpen 抽屉开关，chatUnread 未读数；theater 窗口内全屏；sysFs 系统全屏。
+  chatOpen: false,
+  chatUnread: 0,
+  theater: false,
+  sysFs: false,
+  // 投屏画质：码率(bps) + 采集分辨率上界(宽)，仅投屏方有意义，UI 面板选择；持久化到 localStorage。
+  screenBitrate: (typeof localStorage !== 'undefined' && parseInt(localStorage.getItem('netbridge_screen_bitrate'), 10)) || 8000000,
+  screenResolution: (typeof localStorage !== 'undefined' && parseInt(localStorage.getItem('netbridge_screen_resolution'), 10)) || 1920,
+  showQualityMenu: false,
 })
 const showLog = ref(false)
 const chatMsg = ref('')
 const chatEl = ref(null)
 const logEl = ref(null)
+const screenCanvasEl = ref(null)
 const nameEl = ref(null)
 let autoTried = false
 let refreshTimer = null
@@ -152,6 +167,8 @@ function addLog(msg) {
 function addChat(nick, msg, ts) {
   data.chat.push({nick, msg, ts})
   if (data.chat.length > 200) data.chat.shift()
+  // 投屏布局下聊天收起为浮层，未打开则计未读，按钮上显示红点。
+  if (screenLayout.value && !data.chatOpen) data.chatUnread++
   nextTick(() => scrollBottom(chatEl))
 }
 function scrollBottom(el) { if (el?.value) { el.value.scrollTop = el.value.scrollHeight } }
@@ -234,6 +251,12 @@ async function doDisconnect() {
   showConfirm('modal.confirmDisconnect', async () => {
     await Disconnect()
     if (data.voice) { data.voice.stop(); data.voice = null }
+    if (data.screen) { data.screen.stop(); data.screen = null }
+    data.screenSharing = false
+    data.screenActive = false
+    data.chatOpen = false
+    data.chatUnread = 0
+    data.theater = false
     data.micOn = false
     data.micLevel = 0
     data.selfSpeaking = false
@@ -368,6 +391,91 @@ function reportVoiceStatus() {
 }
 function channelLabel(p) {
   return p.channel === 'p2p' ? t('peer.channelP2P') : p.channel === 'relay' ? t('peer.channelRelay') : t('peer.channelPending')
+}
+
+// ---- 投屏 ----
+// 仅 P2P 直连成员能收到画面（Go 侧 SendVideo 的 P2P 闸门保证）；无 P2P peer 时投屏无观众。
+const hasP2PPeer = computed(() => data.allPeers.some(p => p.channel === 'p2p'))
+// 投屏布局触发：本端在投屏或有远端画面时，均采用"画面为主+聊天浮层"布局
+// （投屏方画面区显示占位提示 + 码率控件，观看方显示远端画面 + 全屏控件）。
+const screenLayout = computed(() => data.screenActive || data.screenSharing)
+// 投屏画质档位：分辨率上界(宽) + 码率(bps)，投屏方在画面区右下角面板选择，即时生效。
+const RESOLUTION_PRESETS = [
+  { label: '720p', value: 1280 },
+  { label: '1080p', value: 1920 },
+  { label: '1440p', value: 2560 },
+  { label: '4K', value: 3840 },
+]
+const BITRATE_PRESETS = [
+  { label: '4 Mbps', value: 4000000 },
+  { label: '8 Mbps', value: 8000000 },
+  { label: '12 Mbps', value: 12000000 },
+  { label: '16 Mbps', value: 16000000 },
+]
+
+// autoStartScreen 进房间即启动播放通路 + screen:data 监听（未投屏也能看见别人）。
+async function autoStartScreen() {
+  if (data.screen || !data.joined) return
+  await nextTick()
+  if (!screenCanvasEl.value) return
+  try {
+    data.screen = await startScreen(screenCanvasEl.value, { bitrate: data.screenBitrate, maxWidth: data.screenResolution }, (srcVIP) => {
+      data.screenActive = true
+    }, () => {
+      // 系统"停止共享"条触发：同步本端投屏态回正。
+      data.screenSharing = false
+      addLog(t('screen.stopped'))
+    }, () => {
+      // 远端画面消失（源离开 / 超时无帧）：回到无画面态。
+      data.screenActive = false
+    })
+  } catch (e) {
+    addLog('✗ 投屏通路启动失败: ' + e)
+  }
+}
+
+// toggleScreenShare 切换本端投屏。getDisplayMedia 需用户手势，必须在点击内调。
+async function toggleScreenShare() {
+  if (!data.screen) return
+  if (data.screenSharing) {
+    data.screen.stopSharing()
+    data.screenSharing = false
+    addLog(t('screen.stopped'))
+  } else {
+    if (!hasP2PPeer.value) addLog(t('screen.noP2P'))
+    const ok = await data.screen.startSharing()
+    data.screenSharing = ok
+    addLog(ok ? t('screen.started') : t('screen.startFail'))
+  }
+}
+// toggleChat 切换投屏时的聊天浮层；打开时清未读。
+function toggleChat() {
+  data.chatOpen = !data.chatOpen
+  if (data.chatOpen) data.chatUnread = 0
+}
+// toggleTheater 切换"窗口内全屏"：画面覆盖整个主窗体（含 members），ESC 退出。
+function toggleTheater() {
+  data.theater = !data.theater
+}
+// toggleSysFullscreen 切换系统全屏；以 Wails 真实状态为准，避免与框架 ESC 退出不同步。
+async function toggleSysFullscreen() {
+  try {
+    const cur = await WindowIsFullscreen()
+    if (cur) { WindowUnfullscreen(); data.sysFs = false }
+    else { WindowFullscreen(); data.sysFs = true }
+  } catch (e) { addLog('全屏切换失败: ' + e) }
+}
+// setScreenBitrate 设置投屏码率并即时生效（encoder reconfigure）；持久化到 localStorage。
+function setScreenBitrate(bps) {
+  data.screenBitrate = bps
+  try { localStorage.setItem('netbridge_screen_bitrate', String(bps)) } catch (e) {}
+  if (data.screen) data.screen.setBitrate(bps)
+}
+// setScreenResolution 设置采集分辨率上界并即时生效（capture 下一帧按新尺寸缩放，encoder 检测尺寸变化重配）；持久化。
+function setScreenResolution(w) {
+  data.screenResolution = w
+  try { localStorage.setItem('netbridge_screen_resolution', String(w)) } catch (e) {}
+  if (data.screen) data.screen.setResolution(w)
 }
 // 延迟徽标颜色档：<80ms 绿 / <150ms 黄 / 否则红。
 function latencyClass(ms) {
@@ -538,7 +646,10 @@ function onKeydown(e) {
     const tag = (e.target && e.target.tagName) || ''
     if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
       e.preventDefault()
-      if (data.activePeerVIP || data.peerMenu) closePeerFloats()
+      // 优先级：退出窗口内全屏 > 关聊天浮层 > 关成员浮层 > 最小化到托盘
+      if (data.theater) data.theater = false
+      else if (data.chatOpen) data.chatOpen = false
+      else if (data.activePeerVIP || data.peerMenu) closePeerFloats()
       else WindowHide()
     }
   }
@@ -599,6 +710,8 @@ function syncTray() {
 }
 // 语言或语音开关变化 -> 重推托盘菜单状态（含打勾与翻译文案）。
 watch([locale, () => data.voiceEnabled], () => syncTray())
+// 停止投屏时收起画质菜单，避免下次投屏时菜单残留打开。
+watch(() => data.screenSharing, (v) => { if (!v) data.showQualityMenu = false })
 
 onMounted(() => {
   EventsOn('status:change', (s) => {
@@ -617,11 +730,14 @@ onMounted(() => {
   EventsOn('peer:update', (peers) => {
     const list = peers || []
     // 清理已离开 peer 的播放解码器，避免 players Map 累积泄漏 AudioDecoder（直到退房才整体 close）。
-    if (data.voice) {
+    if (data.voice || data.screen) {
       const stay = new Set(list.map(peerVIPNum))
       for (const p of data.allPeers) {
         const v = peerVIPNum(p)
-        if (!stay.has(v)) data.voice.removePeer(v)
+        if (!stay.has(v)) {
+          if (data.voice) data.voice.removePeer(v)
+          if (data.screen) data.screen.removePeer(v)
+        }
       }
     }
     data.allPeers = list
@@ -643,6 +759,7 @@ onMounted(() => {
       isIPv6: !!self.isIPv6,
     }
     if (self.vip && data.joined && !data.voice) autoStartVoice()
+    if (self.vip && data.joined && !data.screen) autoStartScreen()
     // 此时服务端已注册本 peer，上报一次初始语音状态供其他成员信息卡展示。
     reportVoiceStatus()
   })
@@ -671,6 +788,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (data.voice) { data.voice.stop(); data.voice = null }
+  if (data.screen) { data.screen.stop(); data.screen = null }
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('focus', checkClipboardInvite)
   EventsOff('status:change')
@@ -736,6 +854,17 @@ onUnmounted(() => {
         <button v-if="!data.joined" @click="openGitHub" class="btn btn-ghost btn-sm icon-btn github-btn" title="GitHub" aria-label="GitHub">
           <svg class="ico" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 .5C5.37.5 0 5.78 0 12.29c0 5.2 3.44 9.61 8.21 11.16.6.11.82-.25.82-.56 0-.28-.01-1.02-.02-2-3.34.71-4.04-1.58-4.04-1.58-.55-1.36-1.34-1.72-1.34-1.72-1.09-.73.08-.72.08-.72 1.21.08 1.84 1.22 1.84 1.22 1.07 1.8 2.81 1.28 3.5.98.11-.76.42-1.28.76-1.57-2.67-.3-5.47-1.3-5.47-5.78 0-1.28.47-2.32 1.23-3.14-.12-.3-.53-1.5.12-3.13 0 0 1-.32 3.3 1.2a11.6 11.6 0 0 1 6 0c2.3-1.52 3.3-1.2 3.3-1.2.65 1.63.24 2.83.12 3.13.77.82 1.23 1.86 1.23 3.14 0 4.49-2.81 5.48-5.49 5.77.43.36.81 1.08.81 2.18 0 1.57-.01 2.84-.01 3.23 0 .31.21.68.83.56A12.04 12.04 0 0 0 24 12.29C24 5.78 18.63.5 12 .5z"/>
+          </svg>
+        </button>
+        <!-- 投屏：低频动作，置顶栏 icon-btn；仅在有 P2P 直连成员（或本端正在投屏）时浮现，无观众时不占视觉权重 -->
+        <button v-if="data.joined && (hasP2PPeer || data.screenSharing)"
+                @click="toggleScreenShare"
+                class="btn btn-ghost btn-sm icon-btn screen-icon-btn"
+                :class="{ 'is-on': data.screenSharing }"
+                :title="data.screenSharing ? t('screen.sharing') : t('screen.shareTip')"
+                :aria-label="t('screen.share')">
+          <svg class="ico" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M3 4h18c1.1 0 2 .9 2 2v10c0 1.1-.9 2-2 2h-7v2h3v2H7v-2h3v-2H3c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
           </svg>
         </button>
         <button v-if="data.connected" @click="doDisconnect" class="btn btn-ghost btn-sm btn-danger-ghost">{{ t('topbar.disconnect') }}</button>
@@ -807,7 +936,7 @@ onUnmounted(() => {
     </div>
 
     <!-- 主聊天页：左成员 + 右聊天 -->
-    <section v-else class="room">
+    <section v-else class="room" :class="{ 'has-screen': screenLayout }">
       <!-- 左侧成员列表 -->
       <aside class="members">
         <div class="members-head">
@@ -913,8 +1042,44 @@ onUnmounted(() => {
         </div>
       </aside>
 
-      <!-- 中央聊天区 -->
-      <section class="chat">
+      <!-- 中间投屏画面区：投屏(发或看)时顶到中间，聊天退到右侧浮层 -->
+      <section class="screen-stage" v-if="data.joined" v-show="screenLayout" :class="{ theater: data.theater }">
+        <canvas ref="screenCanvasEl" class="screen-canvas"></canvas>
+        <!-- 投屏方无远端画面时的占位提示 -->
+        <div v-if="data.screenSharing && !data.screenActive" class="screen-placeholder">{{ t('screen.sharing') }}</div>
+        <!-- 画面控件（右下角）：码率(投屏方) / 聊天(未读) / 窗口内全屏(观看方) / 系统全屏(观看方) -->
+        <div class="screen-controls">
+          <div v-if="data.screenSharing" class="sc-group">
+            <button class="sc-btn" @click="data.showQualityMenu = !data.showQualityMenu" :class="{ 'is-on': data.showQualityMenu }" :title="t('screen.quality')" :aria-label="t('screen.quality')">
+              <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <div v-if="data.showQualityMenu" class="sc-menu sc-quality" @click.stop>
+              <div class="sc-menu-title">{{ t('screen.resolution') }}</div>
+              <button v-for="r in RESOLUTION_PRESETS" :key="r.value" class="sc-menu-item" :class="{ 'is-active': data.screenResolution === r.value }" @click="setScreenResolution(r.value)">{{ r.label }}</button>
+              <div class="sc-menu-divider"></div>
+              <div class="sc-menu-title">{{ t('screen.bitrate') }}</div>
+              <button v-for="b in BITRATE_PRESETS" :key="b.value" class="sc-menu-item" :class="{ 'is-active': data.screenBitrate === b.value }" @click="setScreenBitrate(b.value)">{{ b.label }}</button>
+            </div>
+          </div>
+          <button class="sc-btn" @click="toggleChat" :class="{ 'is-on': data.chatOpen }" :title="t('chat.title')" :aria-label="t('chat.title')">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span v-if="data.chatUnread" class="sc-badge">{{ data.chatUnread > 99 ? '99+' : data.chatUnread }}</span>
+          </button>
+          <button v-if="data.screenActive" class="sc-btn" @click="toggleTheater" :class="{ 'is-on': data.theater }" :title="t('screen.theater')" :aria-label="t('screen.theater')">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="1"/><rect x="7" y="9" width="10" height="6" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <button v-if="data.screenActive" class="sc-btn" @click="toggleSysFullscreen" :class="{ 'is-on': data.sysFs }" :title="t('screen.fullscreen')" :aria-label="t('screen.fullscreen')">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+          </button>
+        </div>
+        <!-- 聊天浮层遮罩：点画面区关闭 -->
+        <div class="chat-overlay" v-if="data.chatOpen" @click="data.chatOpen = false"></div>
+        <!-- 画质菜单遮罩：点画面区关闭 -->
+        <div class="sc-overlay" v-if="data.showQualityMenu" @click="data.showQualityMenu = false"></div>
+      </section>
+
+      <!-- 聊天区：无投屏时常驻 flex:1；有投屏时变右侧滑出浮层（.open 滑入） -->
+      <section class="chat" :class="{ open: data.chatOpen }">
         <div class="chat-msgs" ref="chatEl">
           <div v-for="(c, i) in data.chat"
                :key="i"
@@ -1274,6 +1439,7 @@ onUnmounted(() => {
   display: flex;
   overflow: hidden;
   min-height: 0;
+  position: relative;
 }
 
 /* 左侧成员栏 */
@@ -1930,4 +2096,160 @@ onUnmounted(() => {
   width: 15px;
   height: 15px;
 }
+/* 投屏：顶栏 icon-btn；正在投屏时高亮 accent */
+.screen-icon-btn.is-on {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+/* 中间投屏画面区：有投屏(screenActive)时显示并 flex:1 撑满中间，无投屏时 v-show 隐藏。
+   has-screen 同时把聊天退为右侧 340px 侧栏（见 .room.has-screen .chat）。 */
+.screen-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: #000;
+  overflow: hidden;
+  position: relative;
+}
+/* 窗口内全屏：画面覆盖整个 .room（含 members），ESC 或再点按钮退出。 */
+.screen-stage.theater {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+}
+.screen-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+/* 画面控件（右下角浮层）*/
+.screen-controls {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  display: flex;
+  gap: 6px;
+  z-index: 30;
+}
+/* 投屏方无远端画面时的占位提示 */
+.screen-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 14px;
+  pointer-events: none;
+}
+/* 码率按钮 + 下拉菜单容器 */
+.sc-group { position: relative; }
+.sc-menu {
+  position: absolute;
+  bottom: 40px;
+  right: 0;
+  min-width: 96px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 40;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.sc-menu-item {
+  white-space: nowrap;
+  padding: 6px 12px;
+  background: transparent;
+  color: var(--color-text);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+.sc-menu-item:hover { background: rgba(255, 255, 255, 0.06); }
+.sc-menu-item.is-active { color: var(--color-accent); font-weight: 600; }
+/* 画质面板：比纯码率下拉更宽，含分辨率 + 码率两组 + 分隔。 */
+.sc-quality { min-width: 124px; }
+.sc-menu-title {
+  padding: 6px 12px 2px;
+  font-size: 11px;
+  color: var(--color-text);
+  opacity: 0.5;
+}
+.sc-menu-divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--color-border);
+}
+/* 画质菜单遮罩：点画面区关闭菜单。z-index 须低于 screen-controls(30)，否则会盖住
+   菜单（菜单在 controls 的层叠上下文内，实际层级被 30 封顶，遮罩高于 30 就点不到菜单项）。 */
+.sc-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  cursor: pointer;
+}
+.sc-btn {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.sc-btn:hover { background: rgba(0, 0, 0, 0.75); }
+.sc-btn.is-on { background: var(--color-accent); border-color: var(--color-accent); }
+.sc-btn .ico { width: 16px; height: 16px; }
+.sc-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background: #e53935;
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: 8px;
+  text-align: center;
+}
+/* 聊天浮层遮罩：投屏+打开时覆盖画面区，点击关闭。 */
+.chat-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 20;
+  cursor: pointer;
+}
+/* 聊天：无投屏时是常驻 flex:1 列；有投屏时变右侧滑出浮层（默认隐藏，.open 滑入）。
+   z-index 60 高于 theater(50)，窗口内全屏时也能拉出聊天。 */
+.room.has-screen .chat {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 340px;
+  flex: none;
+  transform: translateX(100%);
+  transition: transform 0.2s ease;
+  z-index: 60;
+  background: var(--color-bg-secondary);
+  border-left: 1px solid var(--color-border);
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.3);
+}
+.room.has-screen .chat.open { transform: translateX(0); }
 </style>

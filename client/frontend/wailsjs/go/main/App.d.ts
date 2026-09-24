@@ -26,6 +26,8 @@ export function RestartAsAdmin():Promise<void>;
 
 export function SendChat(arg1:string):Promise<void>;
 
+export function SendVideoToAll(arg1:Array<number>):Promise<void>;
+
 export function SendVoiceToAll(arg1:Array<number>):Promise<void>;
 
 export function SetTrayMenuState(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;

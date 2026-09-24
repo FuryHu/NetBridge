@@ -39,6 +39,20 @@ export default {
   'voice.mutedForYou': '已为你静音',
   'voice.speaking': '正在说话',
 
+  // 投屏
+  'screen.share': '投屏',
+  'screen.sharing': '投屏中',
+  'screen.shareTip': '共享屏幕（仅 P2P 直连成员可观看）',
+  'screen.stopped': '已停止投屏',
+  'screen.started': '已开始投屏',
+  'screen.startFail': '投屏启动失败（WebView2 可能不支持 WebCodecs）',
+  'screen.noP2P': '当前无 P2P 直连成员，暂无观众',
+  'screen.theater': '窗口内全屏',
+  'screen.fullscreen': '全屏',
+  'screen.bitrate': '码率',
+  'screen.quality': '画质',
+  'screen.resolution': '分辨率',
+
   // 顶栏
   'topbar.log': '日志',
   'topbar.disconnect': '断开',
@@ -77,6 +91,7 @@ export default {
   'peer.menuUnmute': '取消静音',
 
   // 聊天
+  'chat.title': '聊天',
   'chat.placeholder': '输入消息...',
   'chat.send': '发送',
   'chat.empty': '暂无消息',

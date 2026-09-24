@@ -40,6 +40,20 @@ export default {
   'voice.mutedForYou': 'ミュート済み',
   'voice.speaking': '発話中',
 
+  // 画面共有
+  'screen.share': '画面共有',
+  'screen.sharing': '共有中',
+  'screen.shareTip': '画面を共有（P2P 直通メンバーのみ視聴可）',
+  'screen.stopped': '画面共有を停止しました',
+  'screen.started': '画面共有を開始しました',
+  'screen.startFail': '画面共有の開始に失敗（WebCodecs 非対応の可能性）',
+  'screen.noP2P': 'P2P 直通メンバーがいないため、視聴者なし',
+  'screen.theater': 'ウィンドウ内全画面',
+  'screen.fullscreen': '全画面',
+  'screen.bitrate': 'ビットレート',
+  'screen.quality': '画質',
+  'screen.resolution': '解像度',
+
   // トップバー
   'topbar.log': 'ログ',
   'topbar.disconnect': '切断',
@@ -78,6 +92,7 @@ export default {
   'peer.menuUnmute': 'ミュート解除',
 
   // チャット
+  'chat.title': 'チャット',
   'chat.placeholder': 'メッセージを入力...',
   'chat.send': '送信',
   'chat.empty': 'メッセージなし',

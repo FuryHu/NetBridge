@@ -81,7 +81,7 @@ type Client struct {
 
 	// lastEmittedLatency 上次推给前端的各 peer 延迟，用于增量去重（latencyEmitLoop）。
 	lastEmittedLatency map[string]int64
-	latencyMu         sync.Mutex
+	latencyMu          sync.Mutex
 
 	// onLatencyUpdate 单个 peer 延迟变化回调（peerID, ms；ms=-1 表示未知或已离线）。
 	onLatencyUpdate func(peerID string, ms int64)
@@ -92,6 +92,17 @@ type Client struct {
 	// voiceHandler 收到对端语音帧时的回调（供前端播放模块注入）。
 	// 与 dataHandler 独立：语音不进虚拟网卡，走单独的播放通路。
 	voiceHandler func(srcVIP uint32, payload []byte)
+
+	// videoHandler 收到对端完整视频帧（已重组）时的回调（供前端播放模块注入）。
+	// 与 voiceHandler 同构：视频不进虚拟网卡。payload 为重组后的完整 H.264 帧。
+	videoHandler func(srcVIP uint32, payload []byte, keyframe bool, ts uint64)
+
+	// videoReassemblers 按 srcVIP 维护视频分片重组器。视频帧拆成多个 UDP 包，
+	// 重组在 Go 侧完成（而非前端），避免每分片一次 Wails IPC。
+	// 注意：UDPConn.Start 对每个包开独立 goroutine 调 dispatch，关键帧的数十个分片会并发
+	// 到达，故 videoReassemblers 及重组器内部状态均由 videoMu 保护。
+	videoReassemblers map[uint32]*protocol.VideoReassembler
+	videoMu           sync.Mutex
 
 	// chatHandler 收到聊天消息时的回调（供前端展示）。
 	chatHandler func(nickName, msg string, ts int64)
@@ -118,16 +129,17 @@ func New(log *slog.Logger) *Client {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Client{
-		cfg:            DefaultConfig(),
-		peerMgr:        peer.NewManager(),
-		channels:       make(map[string]netconn.Channel),
-		pendingPunches: make(map[string]chan struct{}),
+		cfg:                DefaultConfig(),
+		peerMgr:            peer.NewManager(),
+		channels:           make(map[string]netconn.Channel),
+		pendingPunches:     make(map[string]chan struct{}),
 		pongCh:             make(chan protocol.PongPacket, 4),
 		lastEmittedLatency: make(map[string]int64),
-		state:          StateDisconnected,
-		log:            log,
-		ctx:            ctx,
-		cancel:         cancel,
+		videoReassemblers:  make(map[uint32]*protocol.VideoReassembler),
+		state:              StateDisconnected,
+		log:                log,
+		ctx:                ctx,
+		cancel:             cancel,
 	}
 }
 
@@ -146,6 +158,12 @@ func (c *Client) SetDataHandler(fn func(srcVIP uint32, data []byte)) { c.dataHan
 
 // SetVoiceHandler 注册对端语音帧回调（供前端播放模块注入）。
 func (c *Client) SetVoiceHandler(fn func(srcVIP uint32, payload []byte)) { c.voiceHandler = fn }
+
+// SetVideoHandler 注册对端视频帧回调（已重组的完整帧，供前端播放注入）。
+// keyframe 标识该帧是否为关键帧，ts 为采集时间戳（微秒），喂给解码器维持单调时间戳。
+func (c *Client) SetVideoHandler(fn func(srcVIP uint32, payload []byte, keyframe bool, ts uint64)) {
+	c.videoHandler = fn
+}
 
 // SetChatHandler 注册聊天消息回调。
 func (c *Client) SetChatHandler(fn func(nickName, msg string, ts int64)) { c.chatHandler = fn }
@@ -500,6 +518,53 @@ func (c *Client) SendVoiceToAll(payload []byte) error {
 	return lastErr
 }
 
+// SendVideo 向指定 peer 发送一帧完整视频：按 MTU 切成多个 FrameVideo 分片逐包发出。
+// P2P 闸门：仅走 P2P 直连通道，Relay 通道直接跳过--投屏不消耗服务器带宽。
+// 无通道或非 P2P 时返回 nil（视为"该 peer 暂不可投屏"，非错误）。
+func (c *Client) SendVideo(dstVIP uint32, codec, flags byte, frameID uint16, ts uint64, frame []byte) error {
+	frags := protocol.EncodeVideoFragments(codec, flags, frameID, ts, frame, protocol.VideoMaxFragData)
+	return c.sendVideoFrags(dstVIP, frags)
+}
+
+// sendVideoFrags 向指定 peer 发送已切好的分片（P2P 闸门）。供 SendVideo 与 SendVideoToAll 复用。
+func (c *Client) sendVideoFrags(dstVIP uint32, frags [][]byte) error {
+	ch, err := c.channelForVIP(dstVIP)
+	if err != nil {
+		return nil
+	}
+	if ch.Type() != netconn.ChannelP2P {
+		return nil // P2P 闸门：relay 通道不投屏
+	}
+	for _, f := range frags {
+		if err := ch.SendTyped(protocol.FrameVideo, f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SendVideoToAll 解析视频帧封装并广播给房间内所有 P2P 直连 peer。
+// 与 SendVoiceToAll 同构：前端每帧只调一次本方法（payload 为 envelope），由后端遍历 peer 分发。
+// 切分对所有 peer 完全相同，故只切一次复用，避免逐 peer 重复切分。Relay peer 被 P2P 闸门跳过。
+func (c *Client) SendVideoToAll(payload []byte) error {
+	codec, flags, frameID, ts, frame, err := protocol.DecodeVideoEnvelope(payload)
+	if err != nil {
+		return err
+	}
+	frags := protocol.EncodeVideoFragments(codec, flags, frameID, ts, frame, protocol.VideoMaxFragData)
+	selfVIP := c.peerMgr.Self().VirtualIP
+	var lastErr error
+	for _, p := range c.peerMgr.List() {
+		if p.VirtualIP == selfVIP {
+			continue
+		}
+		if err := c.sendVideoFrags(p.VirtualIP, frags); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
 // PingServer 向服务器发送 Ping 并等待 Pong，返回 RTT（毫秒）。
 //
 // 不直接读 pongCh：pongLoop 是 pongCh 的唯一消费者，每收一个 Pong 就算出 serverRTT
@@ -777,11 +842,45 @@ func (c *Client) handleCompactFrame(remote *net.UDPAddr, data []byte) {
 		if c.voiceHandler != nil {
 			c.voiceHandler(srcVIP, buf)
 		}
+	case protocol.FrameVideo:
+		if c.videoHandler != nil {
+			c.handleVideoFragment(srcVIP, buf)
+		}
 	default: // FrameP2P / FrameRelay -> 网卡
 		if c.dataHandler != nil {
 			c.dataHandler(srcVIP, buf)
 		}
 	}
+}
+
+// handleVideoFragment 重组单个视频分片；一帧收齐后回调 videoHandler（已重组的完整帧字节）。
+// 按 srcVIP 维护独立重组器；peer 退出时在 handlePeerLeave 清理其重组器，map 达 32 上限则
+// 淘汰单个非当前条目腾位（极端兜底，仅丢一个 peer 的在途帧）。
+// dispatch 由 UDPConn.Start 每包一个 goroutine 调用，关键帧的数十个分片会并发到达，
+// 故 map 与重组器内部状态均由 videoMu 保护；videoHandler（EventsEmit）在锁外调用。
+func (c *Client) handleVideoFragment(srcVIP uint32, payload []byte) {
+	frag, err := protocol.DecodeVideoFragment(payload)
+	if err != nil {
+		return
+	}
+	c.videoMu.Lock()
+	r := c.videoReassemblers[srcVIP]
+	if r == nil {
+		if len(c.videoReassemblers) >= 32 { // 上限保护：淘汰一个非当前条目腾位，避免无限增长
+			for k := range c.videoReassemblers {
+				delete(c.videoReassemblers, k)
+				break
+			}
+		}
+		r = protocol.NewVideoReassembler()
+		c.videoReassemblers[srcVIP] = r
+	}
+	assembled, _, flags, ts, ok := r.Push(frag)
+	c.videoMu.Unlock()
+	if !ok {
+		return
+	}
+	c.videoHandler(srcVIP, assembled, flags&protocol.VideoFlagKeyframe != 0, ts)
 }
 
 func (c *Client) handleRoomStatus(raw []byte) {
@@ -850,6 +949,12 @@ func (c *Client) handlePeerLeave(raw []byte) {
 		return
 	}
 
+	// 清理该 peer 的视频重组器（按 VIP 索引），避免 departed peer 的重组器惰性残留。
+	if p := c.peerMgr.Get(pkt.PeerID); p != nil {
+		c.videoMu.Lock()
+		delete(c.videoReassemblers, p.VirtualIP)
+		c.videoMu.Unlock()
+	}
 	c.peerMgr.Remove(pkt.PeerID)
 	c.latencyMu.Lock()
 	delete(c.lastEmittedLatency, pkt.PeerID)

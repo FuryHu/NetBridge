@@ -97,6 +97,18 @@ func (a *App) startup(ctx context.Context) {
 			"data":   payload,
 		})
 	})
+	a.client.SetVideoHandler(func(srcVIP uint32, payload []byte, keyframe bool, ts uint64) {
+		if a.ctx == nil {
+			return
+		}
+		// payload 为重组后的完整 H.264 帧字节；keyframe 供前端决定是否可起播，ts 喂解码器。
+		wailsRuntime.EventsEmit(a.ctx, "screen:data", map[string]interface{}{
+			"srcVIP":   srcVIP,
+			"data":     payload,
+			"keyframe": keyframe,
+			"ts":       ts,
+		})
+	})
 
 	// 系统托盘：关闭/ESC 最小化到这里，右键菜单提供显示窗口 / 切换语音 / 退出。
 	// 菜单项回调在托盘线程触发，转调下面的方法（都用 wailsRuntime，跨线程安全）。
@@ -270,6 +282,16 @@ func (a *App) SendVoiceToAll(payload []byte) error {
 		return fmt.Errorf("客户端未初始化")
 	}
 	return a.client.SendVoiceToAll(payload)
+}
+
+// SendVideoToAll 向房间内所有 P2P 直连 peer 广播一帧完整视频。
+// payload 为视频帧封装（envelope：codec/flags/frameID/ts/frame，见 protocol/video.go），
+// 由后端按 MTU 切分成多个 FrameVideo 分片发送；Relay peer 被闸门跳过，不消耗服务器带宽。
+func (a *App) SendVideoToAll(payload []byte) error {
+	if a.client == nil {
+		return fmt.Errorf("客户端未初始化")
+	}
+	return a.client.SendVideoToAll(payload)
 }
 
 // autoEnsureTun 是 onSelfUpdate 回调里的网卡自动开启逻辑。
@@ -457,11 +479,11 @@ type PeerView struct {
 	PublicAddr string `json:"publicAddr"`
 	V4         string `json:"v4,omitempty"`
 	V6         string `json:"v6,omitempty"`
-	Channel    string `json:"channel"` // p2p / relay / none
+	Channel    string `json:"channel"`           // p2p / relay / none
 	VoiceOn    bool   `json:"voiceOn,omitempty"` // 是否开启语音（对方上报）
 	MicOn      bool   `json:"micOn,omitempty"`   // 是否开麦（对方上报）
-	IsIPv6     bool   `json:"isIPv6"`  // P2P 通道是否走 IPv6（self 则看 PublicAddress 是否 v6）
-	Latency    int64 `json:"latency"`  // 到该 peer 的展示延迟（ms）；-1 表示未知。P2P=实测 RTT，中转=双方 SRTT 之和
+	IsIPv6     bool   `json:"isIPv6"`            // P2P 通道是否走 IPv6（self 则看 PublicAddress 是否 v6）
+	Latency    int64  `json:"latency"`           // 到该 peer 的展示延迟（ms）；-1 表示未知。P2P=实测 RTT，中转=双方 SRTT 之和
 }
 
 // selfToView 把自己的 PeerInfo 转成前端视图。

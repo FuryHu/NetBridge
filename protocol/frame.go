@@ -45,6 +45,14 @@ const (
 	FramePing byte = 4
 	FramePong byte = 5
 
+	// FrameVideo 视频帧：payload 为视频分片子格式（codec/flags/frameID/fragCount/fragIdx/ts/data，见 video.go）。
+	// 视频与语音的关键区别：一帧 H.264 关键帧常达数十 KB，远超 DefaultMTU(1400)，无法塞进单个
+	// UDP 包。故一帧编码视频拆成多个 FrameVideo 包逐个发出，接收端按 frameID 重组后再送解码器
+	// （见 video.go 的 EncodeVideoFragments / VideoReassembler）。
+	// 走 P2P 直连时直接发对端，走 Relay 时由服务端按 dstVIP 透传（与 FrameRelay / FrameVoice 同路径）--
+	// 帧格式本身与通道无关；投屏仅走 P2P 的约束在 client 层的 SendVideo 闸门实现，不在此处。
+	FrameVideo byte = 6
+
 	FrameHeaderSize = 12
 )
 
