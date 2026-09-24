@@ -1,9 +1,9 @@
 <script setup>
 import {reactive, onMounted, onUnmounted, nextTick, ref, computed, watch} from 'vue'
 import {Connect, Disconnect, JoinRoom, LeaveRoom, GetPeers, GetSelf, GetStatus, SendChat, OpenURL, SetTrayMenuState, SetVoiceStatus, TestServer} from '../../wailsjs/go/main/App'
-import {EventsOn, EventsOff, WindowHide, ClipboardGetText, WindowFullscreen, WindowUnfullscreen, WindowIsFullscreen} from '../../wailsjs/runtime/runtime'
+import {EventsOn, EventsOff, Environment, WindowHide, ClipboardGetText, WindowFullscreen, WindowUnfullscreen, WindowIsFullscreen} from '../../wailsjs/runtime/runtime'
 import {startVoice} from '../voice'
-import {startScreen} from '../screen'
+import {startScreen, screenSupported} from '../screen'
 import {locale, t, setLocale, LANGS} from '../i18n'
 import MicIcon from './MicIcon.vue'
 
@@ -396,6 +396,14 @@ function channelLabel(p) {
 // ---- 投屏 ----
 // 仅 P2P 直连成员能收到画面（Go 侧 SendVideo 的 P2P 闸门保证）；无 P2P peer 时投屏无观众。
 const hasP2PPeer = computed(() => data.allPeers.some(p => p.channel === 'p2p'))
+// 投屏平台闸门：macOS 第一期不做投屏（WKWebView 没有屏幕采集，见 screen/index.js 的
+// screenSupported 注释）。不并进能力检测——即使某个 WebKit 版本碰巧暴露了
+// getDisplayMedia / WebCodecs，未在真机上验证过的采集链路也不放出来。
+//
+// 初值 true：Environment() 是本地 IPC，毫秒级返回；万一它失败，也不该把 Windows
+// 的投屏功能关掉。平台信息来自 Go 侧 runtime.GOOS（见 wails 的 runtime.Environment），
+// 比 UA 嗅探可靠。
+const screenPlatformOK = ref(true)
 // 投屏布局触发：本端在投屏或有远端画面时，均采用"画面为主+聊天浮层"布局
 // （投屏方画面区显示占位提示 + 码率控件，观看方显示远端画面 + 全屏控件）。
 const screenLayout = computed(() => data.screenActive || data.screenSharing)
@@ -416,6 +424,8 @@ const BITRATE_PRESETS = [
 // autoStartScreen 进房间即启动播放通路 + screen:data 监听（未投屏也能看见别人）。
 async function autoStartScreen() {
   if (data.screen || !data.joined) return
+  // 不支持的平台（macOS）直接短路：连 screen:data 监听都不注册。
+  if (!screenSupported || !screenPlatformOK.value) { addLog(t('screen.unsupported')); return }
   await nextTick()
   if (!screenCanvasEl.value) return
   try {
@@ -437,6 +447,9 @@ async function autoStartScreen() {
 // toggleScreenShare 切换本端投屏。getDisplayMedia 需用户手势，必须在点击内调。
 async function toggleScreenShare() {
   if (!data.screen) return
+  // 顶栏按钮在不支持的平台不会出现，这里兜住其它触发路径：
+  // 否则会落到 startSharing() 返回 false，报出误导性的"投屏启动失败"。
+  if (!screenSupported || !screenPlatformOK.value) { addLog(t('screen.unsupported')); return }
   if (data.screenSharing) {
     data.screen.stopSharing()
     data.screenSharing = false
@@ -714,6 +727,10 @@ watch([locale, () => data.voiceEnabled], () => syncTray())
 watch(() => data.screenSharing, (v) => { if (!v) data.showQualityMenu = false })
 
 onMounted(() => {
+  // 平台闸门（见 screenPlatformOK）：只有 macOS 需要关掉投屏。
+  Environment()
+    .then((env) => { if (env && env.platform === 'darwin') screenPlatformOK.value = false })
+    .catch(() => {}) // 取不到环境就按支持处理，别让 Windows 失去投屏入口
   EventsOn('status:change', (s) => {
     data.status = s
     if (statusKey(s) === 'connected') {
@@ -857,7 +874,8 @@ onUnmounted(() => {
           </svg>
         </button>
         <!-- 投屏：低频动作，置顶栏 icon-btn；仅在有 P2P 直连成员（或本端正在投屏）时浮现，无观众时不占视觉权重 -->
-        <button v-if="data.joined && (hasP2PPeer || data.screenSharing)"
+        <!-- screenSupported / screenPlatformOK：不支持的平台（macOS、老 WebView2）不出现入口 -->
+        <button v-if="data.joined && screenSupported && screenPlatformOK && (hasP2PPeer || data.screenSharing)"
                 @click="toggleScreenShare"
                 class="btn btn-ghost btn-sm icon-btn screen-icon-btn"
                 :class="{ 'is-on': data.screenSharing }"

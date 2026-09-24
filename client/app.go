@@ -141,8 +141,10 @@ func (a *App) shutdown(ctx context.Context) {
 
 // onBeforeClose 拦截窗口关闭：非真正退出时改为隐藏到托盘，退出时放行。
 // 注意：wailsRuntime.Quit 内部也会回调 OnBeforeClose，靠 quitting 标志放行。
+//
+// 没有托盘的平台（macOS 首期）直接放行退出——见 hideOnCloseEnabled 的说明。
 func (a *App) onBeforeClose(ctx context.Context) (prevent bool) {
-	if a.quitting.Load() {
+	if a.quitting.Load() || !hideOnCloseEnabled() {
 		return false
 	}
 	// 异步隐藏，避免在 WM_CLOSE 同步处理链里直接操作窗口的重入风险。
@@ -224,10 +226,15 @@ func (a *App) LeaveRoom() {
 }
 
 // RestartAsAdmin 以管理员权限重启应用。
-// manifest 已声明 requireAdministrator，生产环境理论上不会被调用——
+// Windows 上 manifest 已声明 requireAdministrator，生产环境理论上不会被调用——
 // 保留作为开发期（wails dev 父进程非管理员）的兜底手段。
+// macOS 上 utun 必须由 root 创建，这是目前唯一的手动提权途径（见 elevate_darwin.go）。
+//
+// 平台实现在 elevate_*.go。失败只记日志：前端没有调用点，返回值没地方展示。
 func (a *App) RestartAsAdmin() {
-	RestartAsAdmin()
+	if err := RestartAsAdmin(); err != nil {
+		a.log.Error("提权重启失败", "err", err)
+	}
 }
 
 // OpenURL 用系统默认浏览器打开外部链接（如 GitHub 仓库）。
@@ -348,12 +355,15 @@ func (a *App) autoEnsureTun(vip32 uint32) {
 	a.emitTunActive(true)
 }
 
-// createTunLocked 释放 wintun.dll 并创建 adapter。调用方必须持有 tunMu。
+// createTunLocked 准备平台运行时并创建 adapter。调用方必须持有 tunMu。
+//
+// 名字只在 Windows 上生效（wintun 网卡名）；macOS 的 utun 名字由内核分配，
+// 这里传的 "NetBridge" 会被忽略。
 func (a *App) createTunLocked(vip string) (tun.NetAdapter, error) {
-	if err := extractWintunDLL(); err != nil {
-		return nil, fmt.Errorf("释放 wintun.dll 失败: %w", err)
+	if err := prepareTunRuntime(); err != nil {
+		return nil, err
 	}
-	return tun.CreateWinTun("NetBridge", vip, a.log)
+	return tun.Create("NetBridge", vip, a.log)
 }
 
 // startBridgeLocked 启动一个新 bridge 绑定到 a.adapter。调用方必须持有 tunMu。

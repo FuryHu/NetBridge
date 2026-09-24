@@ -47,6 +47,7 @@ export default {
   'screen.stopped': 'Screen share stopped',
   'screen.started': 'Screen share started',
   'screen.startFail': 'Screen share failed (WebView2 may lack WebCodecs)',
+  'screen.unsupported': 'Screen share is not supported on this platform',
   'screen.noP2P': 'No P2P peers connected, no viewers',
   'screen.theater': 'Theater mode',
   'screen.fullscreen': 'Fullscreen',

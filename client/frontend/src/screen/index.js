@@ -20,11 +20,45 @@ function base64ToBytes(b64) {
   return bytes
 }
 
+// screenSupported：本平台能否投屏。发送侧要 getDisplayMedia 采集屏幕，接收侧要
+// WebCodecs 的 VideoDecoder 解码，两者缺一整个通路都不成立：
+//   - macOS 的 WKWebView 完全没有 getDisplayMedia（屏幕采集得另写原生链路，
+//     见 macOS 移植计划），所以 Mac 端第一期不做投屏；
+//   - 老版本 WebView2 缺 WebCodecs，同样落到这里——顺带修掉了"收到 screen:data
+//     直接 new VideoDecoder 抛异常"的老问题。
+export const screenSupported =
+  typeof VideoDecoder !== 'undefined' &&
+  typeof navigator !== 'undefined' &&
+  !!navigator.mediaDevices &&
+  typeof navigator.mediaDevices.getDisplayMedia === 'function'
+
+// idleSession 返回一个"哑会话"：接口与真会话一致，但什么都不做。
+// 调用方（进房自动启动、退房清理、成员离开清理）因此无需平台判断。
+function idleSession() {
+  const noop = () => {}
+  return {
+    startSharing: async () => false,
+    stopSharing: noop,
+    sharing: false,
+    setBitrate: noop,
+    setResolution: noop,
+    removePeer: noop,
+    stop: noop,
+  }
+}
+
 // startScreen 创建投屏会话。canvas 用于渲染远端画面。
 // onRemoteFrame(srcVIP) 在每收到一帧远端画面时回调（供 UI 显示观看面板）。
 // onStopped() 在本端采集被系统"停止共享"条中断时回调。
 // onIdle() 在远端画面消失（源离开或超时无帧）时回调（供 UI 隐藏画面区）。
+//
+// 平台不支持时返回哑会话且不注册 screen:data 监听——不支持的平台上收到帧也没法解。
 export async function startScreen(canvas, opts = {}, onRemoteFrame, onStopped, onIdle) {
+  if (!screenSupported) {
+    console.warn('[screen] 当前平台不支持投屏（缺 getDisplayMedia 或 WebCodecs），投屏通路未启动')
+    return idleSession()
+  }
+
   const playback = await createPlayback(canvas, onIdle)
 
   const onVideo = (ev) => {

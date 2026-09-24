@@ -47,6 +47,7 @@ export default {
   'screen.stopped': '画面共有を停止しました',
   'screen.started': '画面共有を開始しました',
   'screen.startFail': '画面共有の開始に失敗（WebCodecs 非対応の可能性）',
+  'screen.unsupported': 'このプラットフォームは画面共有に対応していません',
   'screen.noP2P': 'P2P 直通メンバーがいないため、視聴者なし',
   'screen.theater': 'ウィンドウ内全画面',
   'screen.fullscreen': '全画面',

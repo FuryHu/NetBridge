@@ -46,6 +46,7 @@ export default {
   'screen.stopped': '已停止投屏',
   'screen.started': '已开始投屏',
   'screen.startFail': '投屏启动失败（WebView2 可能不支持 WebCodecs）',
+  'screen.unsupported': '当前平台不支持投屏',
   'screen.noP2P': '当前无 P2P 直连成员，暂无观众',
   'screen.theater': '窗口内全屏',
   'screen.fullscreen': '全屏',

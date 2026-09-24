@@ -10,6 +10,15 @@ import { decodeVoicePayload } from './protocol.js'
 
 const OPUS = 1
 
+// 本端有没有 WebCodecs 音频解码器。Safari / WKWebView 的 WebCodecs 只有视频部分，
+// 没有 AudioDecoder；没装 WebCodecs 的旧 WebView2 同样没有。
+// 这种情况下收到 Opus 帧只能丢弃——每帧 new AudioDecoder 会抛 TypeError
+// （事件回调里每来一帧抛一次，日志会被刷爆）。PCM（codec=0）路径不受影响。
+//
+// 这里只做到"别崩 + 说清原因"，真正的软解（wasm-opus）是 macOS 移植的 Phase 2。
+const hasAudioDecoder = typeof AudioDecoder !== 'undefined'
+let noDecoderWarned = false
+
 export async function createPlayback(onPeerLevel) {
   const ctx = new AudioContext({ sampleRate: 48000 })
   // 与 capture 一致：suspended 时尝试 resume。autoStartVoice 走 self:update（非用户手势），
@@ -38,6 +47,15 @@ export async function createPlayback(onPeerLevel) {
   }
 
   function createOpusDecoder(p) {
+    if (!hasAudioDecoder) {
+      if (!noDecoderWarned) {
+        noDecoderWarned = true
+        console.warn('[voice] 本端没有 WebCodecs AudioDecoder，收到的 Opus 语音帧已丢弃；' +
+          '对端用 PCM（codec=0）时仍能听')
+      }
+      p.decoder = null
+      return
+    }
     p.decoder = new AudioDecoder({
       output: (ad) => onDecoded(p, ad),
       error: (e) => console.error('[voice] decode error:', e),
@@ -84,6 +102,7 @@ export async function createPlayback(onPeerLevel) {
     if (!audio || audio.length === 0) return
     const p = getPlayer(srcVIP, codec)
     if (codec === OPUS) {
+      if (!p.decoder) return // 本端解不了（见 hasAudioDecoder），丢弃而不是抛
       const chunk = new EncodedAudioChunk({ type: 'key', timestamp: ts, data: audio })
       p.decoder.decode(chunk)
     } else {
