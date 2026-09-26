@@ -45,7 +45,10 @@ const p2pPingInterval = 3 * time.Second
 // （携带毫秒时间戳）——既测 RTT 又维持 NAT 表项，对端回 FramePong 也顺带维持反向 NAT。
 // Close 时停止。
 type P2PChannel struct {
-	conn     *UDPConn
+	conn *UDPConn
+	// addrMu 保护 peerAddr：CGNAT（如移动家宽）会轮换 NAT 映射，上层收到对端直连帧时
+	// 会调用 SetPeerAddr 把地址更新为实际来源，与 SendTyped 的并发读互斥。
+	addrMu   sync.RWMutex
 	peerAddr *net.UDPAddr
 	srcVIP   uint32
 	dstVIP   uint32
@@ -70,7 +73,10 @@ func NewP2PChannel(conn *UDPConn, peerAddr *net.UDPAddr, srcVIP, dstVIP uint32) 
 // SendTyped 用指定帧类型发送（语音用 FrameVoice，游戏数据用 FrameP2P）。
 func (c *P2PChannel) SendTyped(frameType byte, data []byte) error {
 	frame := protocol.EncodeFrame(frameType, c.srcVIP, c.dstVIP, data)
-	return c.conn.SendRaw(c.peerAddr, frame)
+	c.addrMu.RLock()
+	addr := c.peerAddr
+	c.addrMu.RUnlock()
+	return c.conn.SendRaw(addr, frame)
 }
 
 func (c *P2PChannel) Send(data []byte) error {
@@ -86,7 +92,18 @@ func (c *P2PChannel) Close() {
 }
 
 // PeerAddr 返回对端地址，供上层判断是否需要更新。
-func (c *P2PChannel) PeerAddr() *net.UDPAddr { return c.peerAddr }
+func (c *P2PChannel) PeerAddr() *net.UDPAddr {
+	c.addrMu.RLock()
+	defer c.addrMu.RUnlock()
+	return c.peerAddr
+}
+
+// SetPeerAddr 更新对端地址（自愈：CGNAT 映射轮换后按实际来源修正）。
+func (c *P2PChannel) SetPeerAddr(addr *net.UDPAddr) {
+	c.addrMu.Lock()
+	c.peerAddr = addr
+	c.addrMu.Unlock()
+}
 
 // pingLoop 周期性向对端发 FramePing（携带本端时间戳）——既测 RTT，又维持 NAT 表项。
 //

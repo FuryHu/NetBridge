@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -102,6 +103,12 @@ func (a *DarwinTunAdapter) ReadPacket() ([]byte, error) {
 	buf := make([]byte, utunHeaderSize+maxPacketSize)
 	bufs := [][]byte{buf}
 	sizes := []int{0}
+
+	// utun 的 fd 是 os.NewFile 包过的可轮询 socket，Read 在没包时会 park 在
+	// netpoller 里——bridge.Stop() 的 cancel 叫不醒它，wg.Wait() 会永远卡死
+	// （表现为 root 实例退出/离开房间时挂住）。设 1s 读超时让 Read 周期性醒来，
+	// bridge 的 outboundLoop 遇错回循环顶检查 ctx，Stop 至多 1s 内干净退出。
+	_ = a.device.File().SetReadDeadline(time.Now().Add(time.Second))
 
 	for {
 		n, err := a.device.Read(bufs, sizes, utunHeaderSize)

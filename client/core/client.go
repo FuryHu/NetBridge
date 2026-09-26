@@ -647,6 +647,31 @@ func (c *Client) handlePeerMetrics(raw []byte) {
 	c.peerMgr.SetPeerServerRTT(pkt.PeerID, pkt.ServerRTT)
 }
 
+// updateChannelAddr 把 srcVIP 对应 peer 的 P2P 通道地址更新为实际来源（自愈）。
+// 仅当该 peer 已有 P2P 通道且地址确实变化时才更新；Relay 通道不受影响
+// （FrameP2P 直连帧到达但本地通道是 Relay 时，升级通道交给 createPassiveP2P 的打洞路径）。
+func (c *Client) updateChannelAddr(remote *net.UDPAddr, srcVIP uint32) {
+	p := c.peerMgr.GetByVIP(srcVIP)
+	if p == nil {
+		return
+	}
+	c.channelsMu.RLock()
+	ch, ok := c.channels[p.ID]
+	c.channelsMu.RUnlock()
+	if !ok {
+		return
+	}
+	p2p, isP2P := ch.(*netconn.P2PChannel)
+	if !isP2P {
+		return
+	}
+	if p2p.PeerAddr().String() != remote.String() {
+		old := p2p.PeerAddr().String()
+		p2p.SetPeerAddr(remote)
+		c.clientLog("P2P", "通道地址更新(自愈) peer=%s %s -> %s", p.ID, old, remote.String())
+	}
+}
+
 // handlePeerPing 收到 P2P 延迟探测：回填同一时间戳的 FramePong，沿来路 remote 直发。
 // 走 remote 而非通道选路，确保即便本端到该 peer 的通道是 Relay（对端却直连成功）
 // 也能在直连路径上回包。服务端 relay 不转发 FramePing/FramePong，故这两类帧只走直连。
@@ -824,6 +849,14 @@ func (c *Client) handleCompactFrame(remote *net.UDPAddr, data []byte) {
 	frameType, srcVIP, _, payload, err := protocol.DecodeFrame(data)
 	if err != nil {
 		return
+	}
+	// P2P 通道地址自愈：CGNAT（移动家宽等）会轮换 NAT 映射，对端直连帧实际到达的
+	// 源地址可能与打洞时协商的地址不同——一旦出站还打向旧映射，就会出现
+	// "对端能 ping 通我、我 ping 不通对端"的单向死路。收到直连帧时把通道地址
+	// 更新为实际来源即可恢复。FrameP2P/FramePing/FramePong 只走直连（服务端
+	// relay 不转发，见 server/internal/relay），不会误把服务器地址写进通道。
+	if frameType == protocol.FrameP2P || frameType == protocol.FramePing || frameType == protocol.FramePong {
+		c.updateChannelAddr(remote, srcVIP)
 	}
 	if len(payload) == 0 {
 		return // keepalive 空载帧

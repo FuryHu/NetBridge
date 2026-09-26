@@ -24,11 +24,12 @@ import (
 // wintun 驱动初始化。bridge 与 adapter 解耦——LeaveRoom 只停 bridge，
 // 不动 adapter。
 type App struct {
-	ctx     context.Context
-	client  *core.Client
-	bridge  *tun.Bridge
-	adapter tun.NetAdapter
-	log     *slog.Logger
+	ctx      context.Context
+	client   *core.Client
+	bridge   *tun.Bridge
+	adapter  tun.NetAdapter
+	lanProxy *core.LanProxy
+	log      *slog.Logger
 
 	// tunMu 串行化网卡相关操作（首次创建、SetVIP、Stop）——
 	// onSelfUpdate 来自网络收包 goroutine，可能并发触发，必须加锁。
@@ -127,6 +128,10 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.bridge != nil {
 		a.bridge.Stop()
 	}
+	if a.lanProxy != nil {
+		a.lanProxy.Stop()
+		a.lanProxy = nil
+	}
 	if a.adapter != nil {
 		a.adapter.Close()
 		a.adapter = nil
@@ -219,6 +224,7 @@ func (a *App) LeaveRoom() {
 		a.bridge = nil
 		stopped = true
 	}
+	a.stopLanProxyLocked()
 	a.tunMu.Unlock()
 	if stopped {
 		a.emitTunActive(false)
@@ -258,6 +264,7 @@ func (a *App) Disconnect() {
 		a.bridge = nil
 		stopped = true
 	}
+	a.stopLanProxyLocked()
 	a.tunMu.Unlock()
 	if stopped {
 		a.emitTunActive(false)
@@ -333,6 +340,7 @@ func (a *App) autoEnsureTun(vip32 uint32) {
 		a.adapter = adapter
 		a.lastVIP = vip
 		a.startBridgeLocked()
+		a.ensureLanProxyLocked()
 		a.emitLog(fmt.Sprintf("✓ 虚拟网卡已自动开启 (%s)", vip))
 		a.emitTunActive(true)
 		return
@@ -352,6 +360,7 @@ func (a *App) autoEnsureTun(vip32 uint32) {
 	if a.bridge == nil {
 		a.startBridgeLocked()
 	}
+	a.ensureLanProxyLocked()
 	a.emitTunActive(true)
 }
 
@@ -372,6 +381,24 @@ func (a *App) startBridgeLocked() {
 	bridge.SetLogger(a.log)
 	bridge.Start(a.ctx)
 	a.bridge = bridge
+}
+
+// ensureLanProxyLocked 启动局域网广播代理（darwin 专用，其他平台是空桩）。
+// 与 bridge 同生命周期：bridge 停了虚拟网就不通，代理留着只会占用游戏端口。
+// 调用方必须持有 tunMu。
+func (a *App) ensureLanProxyLocked() {
+	if a.lanProxy == nil {
+		a.lanProxy = core.NewLanProxy(a.client)
+		a.lanProxy.Start()
+	}
+}
+
+// stopLanProxyLocked 停止广播代理并释放端口。调用方必须持有 tunMu（shutdown 除外）。
+func (a *App) stopLanProxyLocked() {
+	if a.lanProxy != nil {
+		a.lanProxy.Stop()
+		a.lanProxy = nil
+	}
 }
 
 // emitLog 把信息推到前端日志面板（log:message 事件）。
